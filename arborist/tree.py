@@ -163,7 +163,13 @@ class TreeSearch:
                     f"Unknown strategy '{strategy}'. "
                     f"Available: {list(STRATEGIES.keys())}"
                 )
-            self._strategy = strategy_cls()
+            # Pass goal to strategies that accept it (e.g., LLMGuidedStrategy)
+            import inspect
+            sig = inspect.signature(strategy_cls.__init__)
+            if "goal" in sig.parameters:
+                self._strategy = strategy_cls(goal=goal)
+            else:
+                self._strategy = strategy_cls()
         else:
             self._strategy = strategy
 
