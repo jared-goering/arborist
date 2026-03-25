@@ -18,6 +18,8 @@ from arborist.strategies.best_first import BestFirstStrategy
 from arborist.strategies.breadth_first import BreadthFirstStrategy
 from arborist.strategies.ucb import UCBStrategy
 from arborist.synthesis import SearchResults, extract_basic_insights, generate_report
+from arborist.mutators import LLMMutator, RandomMutator
+from arborist.mutators.llm_mutator import _parse_json_robustly, _clip_config
 from arborist.tree import TreeSearch
 
 
@@ -536,3 +538,220 @@ class TestStrategies:
         selected = strategy.select(candidates, completed)
         # p2's parent has higher score, so it should be first
         assert selected[0]["id"] == "p2"
+
+
+# ── Test 14: LLMMutator ──────────────────────────────────────────────
+
+class TestLLMMutator:
+    """Tests for the LLM-powered mutator."""
+
+    def test_parse_json_robustly_plain(self):
+        assert _parse_json_robustly('[{"x": 1}]') == [{"x": 1}]
+
+    def test_parse_json_robustly_markdown_fences(self):
+        text = '```json\n[{"x": 1}, {"x": 2}]\n```'
+        result = _parse_json_robustly(text)
+        assert result == [{"x": 1}, {"x": 2}]
+
+    def test_parse_json_robustly_with_comments(self):
+        text = '[\n  {"x": 1}, // first child\n  {"x": 2}  // second child\n]'
+        result = _parse_json_robustly(text)
+        assert result == [{"x": 1}, {"x": 2}]
+
+    def test_parse_json_robustly_configs_wrapper(self):
+        text = '{"configs": [{"x": 1}]}'
+        result = _parse_json_robustly(text)
+        # _parse_json_robustly returns raw parsed JSON; configs extraction happens in LLMMutator
+        assert result == {"configs": [{"x": 1}]}
+
+    def test_parse_json_robustly_garbage(self):
+        assert _parse_json_robustly("I can't do that") is None
+
+    def test_clip_config(self):
+        config = {"x": 100, "y": -5.0, "z": 0.5}
+        bounds = {
+            "x": (0, 50, "int"),
+            "y": (0.0, 1.0, "float"),
+            "z": (0.0, 1.0, "float"),
+        }
+        clipped = _clip_config(config, bounds)
+        assert clipped["x"] == 50
+        assert clipped["y"] == 0.0
+        assert clipped["z"] == 0.5
+
+    def test_clip_config_int_rounding(self):
+        config = {"n": 3.7}
+        bounds = {"n": (1, 10, "int")}
+        clipped = _clip_config(config, bounds)
+        assert clipped["n"] == 4
+        assert isinstance(clipped["n"], int)
+
+    @patch("litellm.completion")
+    def test_llm_mutator_success(self, mock_completion):
+        """LLM returns valid JSON configs."""
+        mock_response = type("R", (), {
+            "choices": [type("C", (), {
+                "message": type("M", (), {"content": '[{"x": 2.5}, {"x": 4.0}]'})()
+            })()]
+        })()
+        mock_completion.return_value = mock_response
+
+        mutator = LLMMutator(model="test-model", max_children=2)
+        context = BranchContext(goal="maximize score", depth=1)
+        children = mutator({"x": 3.0}, {"score": 8.0}, context)
+
+        assert len(children) == 2
+        assert children[0]["x"] == 2.5
+        assert children[1]["x"] == 4.0
+        mock_completion.assert_called_once()
+
+    @patch("litellm.completion")
+    def test_llm_mutator_with_bounds(self, mock_completion):
+        """LLM proposes out-of-bounds values, mutator clips them."""
+        mock_response = type("R", (), {
+            "choices": [type("C", (), {
+                "message": type("M", (), {"content": '[{"x": 100, "y": -5}]'})()
+            })()]
+        })()
+        mock_completion.return_value = mock_response
+
+        bounds = {"x": (0, 10, "int"), "y": (0.0, 1.0, "float")}
+        mutator = LLMMutator(model="test-model", max_children=2, param_bounds=bounds)
+        context = BranchContext(goal="test", depth=0)
+        children = mutator({"x": 5, "y": 0.5}, {"score": 1.0}, context)
+
+        assert len(children) == 1
+        assert children[0]["x"] == 10  # clipped
+        assert children[0]["y"] == 0.0  # clipped
+
+    @patch("litellm.completion")
+    def test_llm_mutator_fallback_on_garbage(self, mock_completion):
+        """LLM returns unparseable text, mutator falls back to random."""
+        mock_response = type("R", (), {
+            "choices": [type("C", (), {
+                "message": type("M", (), {"content": "Sorry, I can't help with that."})()
+            })()]
+        })()
+        mock_completion.return_value = mock_response
+
+        mutator = LLMMutator(model="test-model", max_children=2)
+        context = BranchContext(goal="test", depth=0)
+        children = mutator({"x": 5.0}, {"score": 1.0}, context)
+
+        # Should get fallback perturbation children
+        assert len(children) == 2
+        assert all("x" in c for c in children)
+
+    @patch("litellm.completion")
+    def test_llm_mutator_fallback_on_exception(self, mock_completion):
+        """LLM call throws exception, mutator falls back."""
+        mock_completion.side_effect = RuntimeError("API error")
+
+        mutator = LLMMutator(model="test-model", max_children=2)
+        context = BranchContext(goal="test", depth=0)
+        children = mutator({"x": 5.0}, {"score": 1.0}, context)
+
+        assert len(children) == 2
+        assert all("x" in c for c in children)
+
+    @patch("litellm.completion")
+    def test_llm_mutator_with_store(self, mock_completion, tmp_db):
+        """LLM mutator uses store to include tree context in prompt."""
+        mock_response = type("R", (), {
+            "choices": [type("C", (), {
+                "message": type("M", (), {"content": '[{"x": 3.5}]'})()
+            })()]
+        })()
+        mock_completion.return_value = mock_response
+
+        store = Store(tmp_db)
+        tree = store.create_tree(goal="test", strategy="ucb")
+        n1 = store.create_node(tree["id"], config={"x": 1.0}, depth=0)
+        store.update_node(n1["id"], status="completed", score=5.0, results=json.dumps({"score": 5.0}))
+        n2 = store.create_node(tree["id"], config={"x": 4.0}, depth=0)
+        store.update_node(n2["id"], status="completed", score=9.0, results=json.dumps({"score": 9.0}))
+
+        mutator = LLMMutator(model="test-model", max_children=2, store=store)
+        mutator.set_tree_id(tree["id"])
+
+        context = BranchContext(goal="maximize score", depth=1, parent_score=9.0)
+        children = mutator({"x": 4.0}, {"score": 9.0}, context)
+
+        assert len(children) == 1
+        assert children[0]["x"] == 3.5
+
+        # Verify prompt includes tree context
+        call_args = mock_completion.call_args
+        prompt = call_args[1]["messages"][0]["content"]
+        assert "TOP" in prompt  # Should reference top experiments
+        assert "maximize score" in prompt
+
+    def test_set_store(self, tmp_db):
+        """set_store properly wires the store."""
+        store = Store(tmp_db)
+        mutator = LLMMutator()
+        assert mutator.store is None
+        mutator.set_store(store)
+        assert mutator.store is store
+
+    def test_set_tree_id(self):
+        """set_tree_id properly stores tree ID."""
+        mutator = LLMMutator()
+        assert mutator._tree_id is None
+        mutator.set_tree_id("abc123")
+        assert mutator._tree_id == "abc123"
+
+    @patch("litellm.completion")
+    def test_llm_mutator_fills_missing_keys(self, mock_completion):
+        """If LLM omits a key, it gets filled from parent config."""
+        mock_response = type("R", (), {
+            "choices": [type("C", (), {
+                "message": type("M", (), {"content": '[{"x": 7}]'})()
+            })()]
+        })()
+        mock_completion.return_value = mock_response
+
+        mutator = LLMMutator(model="test-model", max_children=2)
+        context = BranchContext(goal="test", depth=0)
+        children = mutator({"x": 5, "y": 10}, {"score": 1.0}, context)
+
+        assert len(children) == 1
+        assert children[0]["x"] == 7
+        assert children[0]["y"] == 10  # filled from parent
+
+
+class TestRandomMutator:
+    def test_generates_n_children(self):
+        mutator = RandomMutator(n_children=3)
+        context = BranchContext(goal="test", depth=0)
+        children = mutator({"x": 5.0, "y": 10}, {}, context)
+        assert len(children) == 3
+        assert all("x" in c for c in children)
+
+    def test_default_two_children(self):
+        mutator = RandomMutator()
+        context = BranchContext(goal="test", depth=0)
+        children = mutator({"x": 1.0}, {}, context)
+        assert len(children) == 2
+
+
+class TestTreeSearchMutatorWiring:
+    """Test that TreeSearch properly wires store/tree_id into LLMMutator."""
+
+    def test_treesearch_wires_store(self, tmp_db):
+        """TreeSearch.__init__ calls set_store on LLMMutator."""
+        mutator = LLMMutator(model="test-model")
+        assert mutator.store is None
+
+        search = TreeSearch(
+            goal="test",
+            executor=quadratic_experiment,
+            score=lambda r: r["score"],
+            seed_configs=[{"x": 0}],
+            mutator=mutator,
+            max_experiments=1,
+            db_path=tmp_db,
+            verbose=False,
+        )
+
+        assert mutator.store is search.store

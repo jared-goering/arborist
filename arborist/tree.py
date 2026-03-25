@@ -176,6 +176,10 @@ class TreeSearch:
         # Mutator
         self._mutator = mutator or _default_mutator
 
+        # Wire store into mutator if it supports it (e.g., LLMMutator)
+        if hasattr(self._mutator, "set_store"):
+            self._mutator.set_store(self.store)
+
         # Config for termination checks
         self._config = {
             "max_experiments": max_experiments,
@@ -248,6 +252,10 @@ class TreeSearch:
             tree_id = self._tree_id
             self.store.update_tree(tree_id, status="running")
             logger.info("Resuming tree %s: %s", tree_id, tree["goal"])
+
+            # Wire tree_id into mutator if it supports it
+            if hasattr(self._mutator, "set_tree_id"):
+                self._mutator.set_tree_id(tree_id)
         else:
             tree = self.manager.create_tree(
                 goal=self.goal,
@@ -260,6 +268,10 @@ class TreeSearch:
             )
             tree_id = tree["id"]
             logger.info("Created tree %s: %s", tree_id, self.goal)
+
+            # Wire tree_id into mutator if it supports it
+            if hasattr(self._mutator, "set_tree_id"):
+                self._mutator.set_tree_id(tree_id)
 
             # Add seed nodes
             if self.seed_configs:

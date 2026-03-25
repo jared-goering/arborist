@@ -11,6 +11,7 @@ from arborist.strategies import (
     Strategy,
     UCBStrategy,
 )
+from arborist.mutators import LLMMutator, RandomMutator
 from arborist.synthesis import SearchResults, generate_report
 from arborist.tree import TreeSearch
 
@@ -32,6 +33,8 @@ __all__ = [
     "ShellExecutor",
     "Evaluator",
     "NumericEvaluator",
+    "LLMMutator",
+    "RandomMutator",
     "generate_report",
     "__version__",
 ]
