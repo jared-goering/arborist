@@ -100,6 +100,7 @@ class Scientist:
         memory_url: str | None = "http://localhost:8642",
         human_in_the_loop: bool = False,
         on_round_complete: Callable[[RoundResult], None] | None = None,
+        results_parser: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         verbose: bool = True,
         base_script: str | None = None,
         code_gen_output_dir: str = "./experiments/generated",
@@ -116,6 +117,7 @@ class Scientist:
         self.db_path = db_path
         self.human_in_the_loop = human_in_the_loop
         self.on_round_complete = on_round_complete
+        self.results_parser = results_parser
         self.verbose = verbose
         self.base_script = base_script
         self.code_gen_output_dir = code_gen_output_dir
@@ -344,6 +346,18 @@ class Scientist:
                 else:
                     best_results = results_raw
 
+            # For code-gen experiments, results contain raw stdout.
+            # Parse it through results_parser to get structured data
+            # (classification_report, confusion_matrix, feature_importance).
+            if best_results and self.results_parser:
+                stdout = best_results.get("stdout", "")
+                if stdout:
+                    parsed = self.results_parser(best_results)
+                    # Merge parsed fields into results (don't overwrite existing)
+                    for key, value in parsed.items():
+                        if key not in best_results:
+                            best_results[key] = value
+
             return self._observer.observe(
                 results=best_results,
                 score_history=self._score_history,
@@ -432,10 +446,27 @@ class Scientist:
                     self._best_score = score
                     self._best_config = best.get("config")
 
-            # Count experiments
+            # Count only successful experiments (score > 0) toward budget.
+            # Failed experiments (crashes, score=0.0) are wasted compute,
+            # not productive exploration.
             store = Store(self.db_path)
             try:
-                experiments_used = store.count_nodes(results.tree_id)
+                total_experiments = store.count_nodes(results.tree_id)
+                failed_experiments = store.count_nodes(results.tree_id, status="failed")
+                # Count zero-score completed nodes via SQL
+                with store._cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM nodes WHERE tree_id = ? "
+                        "AND status = 'completed' AND (score IS NULL OR score = 0.0)",
+                        (results.tree_id,),
+                    )
+                    zero_score_count = cur.fetchone()[0]
+                successful = total_experiments - failed_experiments - zero_score_count
+                experiments_used = max(1, successful)  # At least 1 to avoid infinite loops
+                logger.info(
+                    "Budget: %d successful / %d total (%d failed, %d zero-score)",
+                    experiments_used, total_experiments, failed_experiments, zero_score_count,
+                )
             finally:
                 store.close()
 

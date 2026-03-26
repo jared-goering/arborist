@@ -99,14 +99,14 @@ class CodeGeneratorExecutor(Executor):
             self._run_cwd = self.cwd
 
         # Generate modified script via LLM
-        modified_script = self._generate_code(
+        modified_script, modified_sections = self._generate_code(
             scaffold=scaffold,
             modifications=modifications,
             context=context,
         )
 
-        # Validate
-        validation_errors = self._validate(modified_script, scaffold)
+        # Validate (includes label leakage check via modified_sections)
+        validation_errors = self._validate(modified_script, scaffold, modified_sections)
         if validation_errors:
             logger.warning(
                 "Validation errors for node %s: %s", node_id, validation_errors
@@ -158,8 +158,13 @@ class CodeGeneratorExecutor(Executor):
         scaffold: ScriptScaffold,
         modifications: str,
         context: BranchContext,
-    ) -> str:
-        """Call LLM to generate modified script sections."""
+    ) -> tuple[str, dict[str, str]]:
+        """Call LLM to generate modified script sections.
+
+        Returns:
+            Tuple of (assembled_script, modified_sections_dict).
+            The dict maps section names to their new content for validation.
+        """
         import litellm
 
         modifiable = scaffold.get_modifiable_sections()
@@ -171,7 +176,7 @@ class CodeGeneratorExecutor(Executor):
         response = litellm.completion(
             model=self.model,
             messages=[
-                {"role": "system", "content": self._system_prompt()},
+                {"role": "system", "content": self._system_prompt(scaffold)},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
@@ -180,7 +185,30 @@ class CodeGeneratorExecutor(Executor):
         text = response.choices[0].message.content or ""
         return self._parse_llm_response(text, scaffold)
 
-    def _system_prompt(self) -> str:
+    def _system_prompt(self, scaffold: ScriptScaffold | None = None) -> str:
+        # Collect all forbidden vars across sections for the global warning
+        all_forbidden: set[str] = set()
+        if scaffold:
+            for sec in scaffold.get_modifiable_sections():
+                all_forbidden.update(sec.forbidden_vars)
+
+        forbidden_warning = ""
+        if all_forbidden:
+            vars_list = ", ".join(sorted(all_forbidden))
+            forbidden_warning = (
+                f"\n\n⚠️ CRITICAL — LABEL LEAKAGE PREVENTION ⚠️\n"
+                f"The following variables contain ground truth labels and MUST NOT "
+                f"be referenced in feature engineering code: {vars_list}\n"
+                f"Any code that reads, indexes, iterates, or derives features from "
+                f"these variables will be REJECTED. Features must be computed from "
+                f"X (input features), subjects, and feature_names ONLY.\n"
+                f"Specifically forbidden patterns:\n"
+                f"- Using y/y_train/y_val to compute class counts, transitions, or durations\n"
+                f"- Creating 'time since last class X' features (requires labels)\n"
+                f"- Using predicted probabilities from a prior model as features (two-stage leakage)\n"
+                f"- Any feature that encodes which sleep stage an epoch belongs to\n"
+            )
+
         return (
             "You are an expert ML engineer. You modify Python training scripts "
             "to implement feature engineering and architecture changes.\n\n"
@@ -197,6 +225,7 @@ class CodeGeneratorExecutor(Executor):
             "6. Do NOT change the evaluation metrics output format.\n"
             "7. Preserve subject-grouped cross-validation — never leak across subjects.\n"
             "8. Do NOT return FROZEN sections — they are automatically preserved.\n"
+            f"{forbidden_warning}"
         )
 
     def _build_prompt(
@@ -238,8 +267,14 @@ class CodeGeneratorExecutor(Executor):
 
         return "".join(parts)
 
-    def _parse_llm_response(self, text: str, scaffold: ScriptScaffold) -> str:
-        """Extract modified sections from LLM response and reassemble full script."""
+    def _parse_llm_response(
+        self, text: str, scaffold: ScriptScaffold
+    ) -> tuple[str, dict[str, str]]:
+        """Extract modified sections from LLM response and reassemble full script.
+
+        Returns:
+            Tuple of (assembled_script, modified_sections_dict).
+        """
         modified_sections: dict[str, str] = {}
 
         # Try labeled fences: ```python section:SectionName
@@ -253,7 +288,7 @@ class CodeGeneratorExecutor(Executor):
 
         # If we got labeled sections, reassemble
         if modified_sections:
-            return scaffold.reassemble(modified_sections)
+            return scaffold.reassemble(modified_sections), modified_sections
 
         # Fallback: try a single code fence (old behavior for backward compat)
         fence_match = re.search(r"```python\s*\n(.*?)```", text, re.DOTALL)
@@ -261,26 +296,32 @@ class CodeGeneratorExecutor(Executor):
             code = fence_match.group(1).strip()
             # Check if it's a full script (has section markers)
             if "# --- SECTION:" in code:
-                return code
+                return code, {}
             # Otherwise assume it's a single modifiable section replacement
             modifiable = scaffold.get_modifiable_sections()
             if len(modifiable) == 1:
-                return scaffold.reassemble({modifiable[0].name: code})
+                modified_sections = {modifiable[0].name: code}
+                return scaffold.reassemble(modified_sections), modified_sections
 
         # Try generic code fence
         fence_match = re.search(r"```\s*\n(.*?)```", text, re.DOTALL)
         if fence_match:
-            return fence_match.group(1).strip()
+            return fence_match.group(1).strip(), {}
 
         # If no fence, try the whole response (it might be just code)
         stripped = text.strip()
         if stripped.startswith(("import ", "from ", "#", "def ", "class ")):
-            return stripped
+            return stripped, {}
 
         raise ValueError("Could not extract Python script from LLM response")
 
-    def _validate(self, script: str, original_scaffold: ScriptScaffold) -> list[str]:
-        """Validate generated script: syntax + frozen sections."""
+    def _validate(
+        self,
+        script: str,
+        original_scaffold: ScriptScaffold,
+        modified_sections: dict[str, str] | None = None,
+    ) -> list[str]:
+        """Validate generated script: syntax + frozen sections + label leakage."""
         errors = []
 
         # Syntax check
@@ -292,6 +333,11 @@ class CodeGeneratorExecutor(Executor):
         # Frozen section check
         violations = original_scaffold.verify_frozen_preserved(script)
         errors.extend(violations)
+
+        # Label leakage check (forbidden variable access)
+        if modified_sections:
+            leakage = original_scaffold.check_forbidden_vars(modified_sections)
+            errors.extend(leakage)
 
         return errors
 

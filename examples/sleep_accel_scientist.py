@@ -185,8 +185,13 @@ def run_experiment(config: dict) -> dict:
 
 
 def score_experiment(results: dict) -> float:
-    """Extract the F1 score from experiment results."""
-    return results.get("f1", 0.0)
+    """Extract the F1 score from experiment results.
+
+    Normal experiments (run_experiment) store the score as 'f1'.
+    Code-gen experiments (CodeGeneratorExecutor) store it as 'val_f1'
+    because _parse_metrics preserves the key name from stdout.
+    """
+    return results.get("f1", results.get("val_f1", 0.0))
 
 
 def on_round_complete(round_result):
@@ -236,6 +241,19 @@ def main():
     print(f"Baseline F1: {baseline_f1:.4f}")
     print()
 
+    def parse_code_gen_results(results: dict) -> dict:
+        """Parse stdout from code-gen experiments into structured data.
+
+        Code-gen experiments return raw stdout in results['stdout'].
+        This parses it the same way we parse normal experiment output,
+        so the Observer gets classification_report, confusion_matrix, etc.
+        """
+        stdout = results.get("stdout", "")
+        if not stdout:
+            return results
+        parsed = parse_train_output(stdout)
+        return parsed
+
     scientist = Scientist(
         problem=(
             "Improve 5-class sleep staging (Wake/N1/N2/N3/REM) from wrist accelerometry + heart rate. "
@@ -259,6 +277,7 @@ def main():
         memory_url="http://localhost:8642",
         human_in_the_loop=args.human_in_the_loop,
         on_round_complete=on_round_complete,
+        results_parser=parse_code_gen_results,
         verbose=args.verbose,
         base_script=str(TRAIN_SCRIPT),
     )

@@ -23,6 +23,7 @@ class ScriptSection:
     content: str
     start_line: int = 0
     end_line: int = 0
+    forbidden_vars: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -42,8 +43,11 @@ class ScriptScaffold:
     postamble: str = ""  # Code after the last section marker
 
     # Regex for section markers
+    # Supports optional FORBID clause: # --- SECTION: Name [MODIFIABLE] FORBID: y, y_train ---
     _SECTION_START = re.compile(
-        r"^#\s*---\s*SECTION:\s*(.+?)\s*\[(FROZEN|MODIFIABLE)\]\s*---\s*$"
+        r"^#\s*---\s*SECTION:\s*(.+?)\s*\[(FROZEN|MODIFIABLE)\]"
+        r"(?:\s+FORBID:\s*(.+?))?"
+        r"\s*---\s*$"
     )
     _SECTION_END = re.compile(r"^#\s*---\s*END SECTION\s*---\s*$")
 
@@ -94,11 +98,18 @@ class ScriptScaffold:
 
                 name = start_match.group(1).strip()
                 stype = SectionType(start_match.group(2))
+                forbid_raw = start_match.group(3)
+                forbidden = (
+                    [v.strip() for v in forbid_raw.split(",") if v.strip()]
+                    if forbid_raw
+                    else []
+                )
                 current_section = ScriptSection(
                     name=name,
                     section_type=stype,
                     content="",
                     start_line=i + 1,
+                    forbidden_vars=forbidden,
                 )
             elif end_match and current_section:
                 current_section.content = "\n".join(current_lines)
@@ -160,8 +171,14 @@ class ScriptScaffold:
                     f"{section.content}\n"
                 )
             else:
+                forbid_note = ""
+                if section.forbidden_vars:
+                    forbid_note = (
+                        f" ⚠ FORBIDDEN: {', '.join(section.forbidden_vars)} — "
+                        f"DO NOT reference these variables"
+                    )
                 parts.append(
-                    f"# ========== {section.name} ({label} — you may modify this) ==========\n"
+                    f"# ========== {section.name} ({label} — you may modify this{forbid_note}) ==========\n"
                     f"{section.content}\n"
                 )
 
@@ -188,7 +205,12 @@ class ScriptScaffold:
                 parts.append(section.content)
                 continue
 
-            marker_start = f"# --- SECTION: {section.name} [{section.section_type.value}] ---"
+            forbid_clause = (
+                f" FORBID: {', '.join(section.forbidden_vars)}"
+                if section.forbidden_vars
+                else ""
+            )
+            marker_start = f"# --- SECTION: {section.name} [{section.section_type.value}]{forbid_clause} ---"
             marker_end = "# --- END SECTION ---"
             parts.append(marker_start)
 
@@ -206,6 +228,65 @@ class ScriptScaffold:
             parts.append(self.postamble)
 
         return "\n".join(parts)
+
+    def check_forbidden_vars(self, modified_sections: dict[str, str]) -> list[str]:
+        """Check that modified sections don't reference forbidden variables.
+
+        Uses AST analysis to detect Name nodes referencing forbidden vars,
+        plus a regex fallback for subscript patterns like ``df['y']``.
+
+        Returns a list of violation descriptions (empty = all good).
+        """
+        import ast as _ast
+
+        violations: list[str] = []
+        section_map = {s.name: s for s in self.sections}
+
+        for sec_name, code in modified_sections.items():
+            sec = section_map.get(sec_name)
+            if not sec or not sec.forbidden_vars:
+                continue
+
+            forbidden_set = set(sec.forbidden_vars)
+
+            # AST-based check: find all Name references
+            try:
+                tree = _ast.parse(code)
+                for node in _ast.walk(tree):
+                    if isinstance(node, _ast.Name) and node.id in forbidden_set:
+                        violations.append(
+                            f"Section '{sec_name}' references forbidden variable "
+                            f"'{node.id}' (line ~{node.lineno}). "
+                            f"Feature engineering must not access labels."
+                        )
+            except SyntaxError:
+                pass  # Syntax errors caught separately in _validate
+
+            # Regex fallback: catch string-based label access like df['y']
+            for var in sec.forbidden_vars:
+                # Match: y_train, dict['y_train'], etc.
+                pattern = re.compile(
+                    rf"""(?:^|[^a-zA-Z_])({re.escape(var)})(?:[^a-zA-Z_0-9]|$)""",
+                    re.MULTILINE,
+                )
+                for match in pattern.finditer(code):
+                    # Avoid duplicating AST findings — only flag if not a bare name
+                    # (bare names caught by AST above)
+                    context = code[max(0, match.start() - 5):match.end() + 5]
+                    if "[" in context or "'" in context or '"' in context:
+                        violations.append(
+                            f"Section '{sec_name}' references forbidden variable "
+                            f"'{var}' via string/subscript access."
+                        )
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for v in violations:
+            if v not in seen:
+                seen.add(v)
+                unique.append(v)
+        return unique
 
     def verify_frozen_preserved(self, new_script: str) -> list[str]:
         """Check that all frozen sections in new_script match the originals.

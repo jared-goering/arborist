@@ -191,6 +191,83 @@ class TestScriptScaffold:
         assert len(scaffold.sections) == 0
         assert "x = 1" in scaffold.preamble
 
+    def test_forbidden_vars_parsing(self):
+        """FORBID clause in section marker is parsed into forbidden_vars."""
+        script = (
+            "# --- SECTION: features [MODIFIABLE] FORBID: y, y_train, y_val ---\n"
+            "X = compute()\n"
+            "# --- END SECTION ---\n"
+        )
+        scaffold = ScriptScaffold.from_script(script)
+        assert scaffold.sections[0].forbidden_vars == ["y", "y_train", "y_val"]
+
+    def test_forbidden_vars_empty_when_absent(self):
+        """Sections without FORBID have empty forbidden_vars."""
+        scaffold = ScriptScaffold.from_script(SAMPLE_SCRIPT)
+        for sec in scaffold.sections:
+            assert sec.forbidden_vars == []
+
+    def test_check_forbidden_vars_catches_name(self):
+        """Direct Name reference to forbidden var is caught."""
+        script = (
+            "# --- SECTION: feat [MODIFIABLE] FORBID: y, labels ---\n"
+            "x = 1\n"
+            "# --- END SECTION ---\n"
+        )
+        scaffold = ScriptScaffold.from_script(script)
+        violations = scaffold.check_forbidden_vars({"feat": "counts = np.bincount(y)"})
+        assert len(violations) >= 1
+        assert "y" in violations[0]
+
+    def test_check_forbidden_vars_allows_clean(self):
+        """Code that doesn't reference forbidden vars passes."""
+        script = (
+            "# --- SECTION: feat [MODIFIABLE] FORBID: y, labels ---\n"
+            "x = 1\n"
+            "# --- END SECTION ---\n"
+        )
+        scaffold = ScriptScaffold.from_script(script)
+        violations = scaffold.check_forbidden_vars(
+            {"feat": "z = np.mean(X, axis=0)\nresult = z * 2"}
+        )
+        assert violations == []
+
+    def test_check_forbidden_vars_catches_subscript(self):
+        """String/subscript access to forbidden vars is caught."""
+        script = (
+            "# --- SECTION: feat [MODIFIABLE] FORBID: y_train ---\n"
+            "x = 1\n"
+            "# --- END SECTION ---\n"
+        )
+        scaffold = ScriptScaffold.from_script(script)
+        violations = scaffold.check_forbidden_vars(
+            {"feat": "stage_counts = df['y_train'].value_counts()"}
+        )
+        assert len(violations) >= 1
+
+    def test_forbidden_vars_preserved_in_reassemble(self):
+        """FORBID clause is preserved through reassemble."""
+        script = (
+            "# --- SECTION: feat [MODIFIABLE] FORBID: y, labels ---\n"
+            "x = 1\n"
+            "# --- END SECTION ---\n"
+        )
+        scaffold = ScriptScaffold.from_script(script)
+        reassembled = scaffold.reassemble({"feat": "x = 2"})
+        assert "FORBID: y, labels" in reassembled
+
+    def test_forbidden_vars_in_prompt_context(self):
+        """build_prompt_context shows forbidden vars warning."""
+        script = (
+            "# --- SECTION: feat [MODIFIABLE] FORBID: y, y_train ---\n"
+            "x = 1\n"
+            "# --- END SECTION ---\n"
+        )
+        scaffold = ScriptScaffold.from_script(script)
+        ctx = scaffold.build_prompt_context()
+        assert "FORBIDDEN" in ctx
+        assert "y" in ctx
+
 
 # ── CodeGeneratorExecutor Tests ──────────────────────────────────────
 
@@ -268,14 +345,14 @@ class TestCodeGeneratorExecutor:
         executor = CodeGeneratorExecutor()
         scaffold = ScriptScaffold.from_script(SAMPLE_SCRIPT)
         response = f"Here's the modified script:\n\n```python\n{MODIFIED_SCRIPT_GOOD}\n```\n\nI added range and magnitude."
-        result = executor._parse_llm_response(response, scaffold)
+        result, sections = executor._parse_llm_response(response, scaffold)
         assert "range_accel" in result
         assert "magnitude" in result
 
     def test_parse_llm_response_raw_code(self):
         executor = CodeGeneratorExecutor()
         scaffold = ScriptScaffold.from_script(SAMPLE_SCRIPT)
-        result = executor._parse_llm_response(MODIFIED_SCRIPT_GOOD, scaffold)
+        result, sections = executor._parse_llm_response(MODIFIED_SCRIPT_GOOD, scaffold)
         assert "compute_features" in result
 
     def test_timeout_handling(self):
