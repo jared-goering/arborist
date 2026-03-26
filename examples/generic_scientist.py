@@ -8,7 +8,7 @@ The FullScriptGenerator creates complete training scripts from a ProblemSpec.
 Usage:
   python3 examples/generic_scientist.py
   python3 examples/generic_scientist.py --max-rounds 5 --budget 50
-  python3 examples/generic_scientist.py --codegen-model openrouter/anthropic/claude-sonnet-4-5
+  python3 examples/generic_scientist.py --codegen-model openrouter/anthropic/claude-sonnet-4-6
 """
 
 import argparse
@@ -49,7 +49,7 @@ def main():
     parser.add_argument("--budget", type=int, default=30)
     parser.add_argument("--model", type=str, default="openrouter/google/gemini-2.5-flash")
     parser.add_argument("--mutator-model", type=str, default="openrouter/google/gemini-2.5-flash")
-    parser.add_argument("--codegen-model", type=str, default="openrouter/anthropic/claude-sonnet-4-5")
+    parser.add_argument("--codegen-model", type=str, default="openrouter/anthropic/claude-sonnet-4-6")
     parser.add_argument("--dataset-path", type=str, required=True,
                         help="Path to dataset CSV file")
     parser.add_argument("--target", type=str, required=True,

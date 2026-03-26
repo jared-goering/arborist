@@ -22,7 +22,7 @@ def scientist_cli() -> None:
 @click.option("--metric", "-m", default="f1_macro", help="Metric to optimize")
 @click.option("--budget", default=200, type=int, help="Total experiment budget")
 @click.option("--max-rounds", default=10, type=int, help="Max observe-hypothesize-execute cycles")
-@click.option("--model", default="openrouter/anthropic/claude-sonnet-4-5", help="Scientist LLM model")
+@click.option("--model", default="openrouter/anthropic/claude-sonnet-4-6", help="Scientist LLM model")
 @click.option("--mutator-model", default="openrouter/anthropic/claude-haiku-4-5", help="Mutator LLM model")
 @click.option("--db", default="./scientist.db", help="Database path")
 @click.option("--journal-dir", default="./scientist_journals", help="Journal storage directory")

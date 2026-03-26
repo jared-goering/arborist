@@ -58,7 +58,7 @@ class CodeGeneratorExecutor(Executor):
 
     def __init__(
         self,
-        model: str = "openrouter/anthropic/claude-sonnet-4-5",
+        model: str = "openrouter/anthropic/claude-sonnet-4-6",
         output_dir: str = "./experiments/generated",
         timeout: float = 300,
         python_cmd: str = "python3",

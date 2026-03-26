@@ -211,7 +211,7 @@ def main():
     parser = argparse.ArgumentParser(description="Arborist Scientist on SleepAccel")
     parser.add_argument("--max-rounds", type=int, default=10)
     parser.add_argument("--budget", type=int, default=200)
-    parser.add_argument("--model", type=str, default="openrouter/anthropic/claude-sonnet-4-5")
+    parser.add_argument("--model", type=str, default="openrouter/anthropic/claude-sonnet-4-6")
     parser.add_argument("--mutator-model", type=str, default="openrouter/anthropic/claude-haiku-4-5")
     parser.add_argument("--codegen-model", type=str, default=None,
                         help="Model for code generation (defaults to --model)")

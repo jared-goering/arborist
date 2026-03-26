@@ -94,7 +94,7 @@ class Scientist:
         metric_name: str = "f1_macro",
         max_rounds: int = 10,
         total_budget: int = 200,
-        model: str = "openrouter/anthropic/claude-sonnet-4-5",
+        model: str = "openrouter/anthropic/claude-sonnet-4-6",
         mutator_model: str = "openrouter/anthropic/claude-haiku-4-5",
         db_path: str = "./scientist.db",
         journal_dir: str = "./scientist_journals",
