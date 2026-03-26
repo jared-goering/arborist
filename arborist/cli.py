@@ -317,3 +317,9 @@ def _prune_descendants(store: Store, node_id: str, reason: str) -> int:
             count += 1
         count += _prune_descendants(store, child["id"], reason)
     return count
+
+
+# Register scientist subcommands
+from arborist.scientist.cli import scientist_cli  # noqa: E402
+
+cli.add_command(scientist_cli, "scientist")
