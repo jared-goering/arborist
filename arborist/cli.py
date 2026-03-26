@@ -71,7 +71,6 @@ def run(config: str) -> None:
         target_score=term.get("target_score"),
         plateau_window=term.get("plateau_window", 20),
         db_path=cfg.get("db_path", "./arborist.db"),
-        memory_url=cfg.get("memory", {}).get("url") if cfg.get("memory", {}).get("enabled") else None,
         verbose=cfg.get("verbose", True),
     )
 
@@ -318,8 +317,3 @@ def _prune_descendants(store: Store, node_id: str, reason: str) -> int:
         count += _prune_descendants(store, child["id"], reason)
     return count
 
-
-# Register scientist subcommands
-from arborist.scientist.cli import scientist_cli  # noqa: E402
-
-cli.add_command(scientist_cli, "scientist")

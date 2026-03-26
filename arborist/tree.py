@@ -13,7 +13,6 @@ from arborist.evaluators.base import Evaluator
 from arborist.executors.base import Executor
 from arborist.executors.python import PythonExecutor
 from arborist.manager import BranchContext, TreeManager
-from arborist.memory import MemoryClient
 from arborist.store import Store
 from arborist.strategies import STRATEGIES, Strategy
 from arborist.synthesis import SearchResults, extract_basic_insights
@@ -113,7 +112,6 @@ class TreeSearch:
         target_score: float | None = None,
         plateau_window: int = 20,
         db_path: str = "./arborist.db",
-        memory_url: str | None = None,
         on_node_complete: Callable[[dict[str, Any]], None] | None = None,
         on_insight: Callable[[dict[str, Any]], None] | None = None,
         verbose: bool = True,
@@ -188,11 +186,6 @@ class TreeSearch:
             "target_score": target_score,
             "plateau_window": plateau_window,
         }
-
-        # Memory (optional)
-        self._memory: MemoryClient | None = None
-        if memory_url:
-            self._memory = MemoryClient(memory_url)
 
         # Tree ID for resume
         self._tree_id = _tree_id
@@ -295,10 +288,7 @@ class TreeSearch:
             for insight in insights:
                 if self.on_insight:
                     self.on_insight(insight)
-                if self._memory:
-                    self._memory.record_insight(
-                        tree_id, insight["type"], insight["content"], self.goal
-                    )
+
         except Exception as e:
             logger.warning("Failed to extract insights: %s", e)
 
@@ -403,12 +393,6 @@ class TreeSearch:
             updated_node = self.store.get_node(node_id)
             if self.on_node_complete and updated_node:
                 self.on_node_complete(updated_node)
-
-            # Memory
-            if self._memory:
-                self._memory.record_node_completion(
-                    tree_id, node_id, config, results, score, self.goal
-                )
 
             # Prune check
             best_score = self.manager.get_best_score(tree_id) or 0
