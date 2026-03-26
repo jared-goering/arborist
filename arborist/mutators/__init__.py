@@ -1,21 +1,16 @@
 """Mutators — generate child configs from parent nodes."""
 
-from arborist.tree import _perturb_config as _perturb
-
-from arborist.mutators.llm_mutator import LLMMutator
+from arborist.mutators.llm_mutator import LLMMutator, _perturb_config_fallback
 
 
 class RandomMutator:
-    """Simple random perturbation mutator (wraps _perturb_config)."""
+    """Simple random perturbation mutator (wraps _perturb_config_fallback)."""
 
     def __init__(self, n_children: int = 2):
         self.n_children = n_children
 
     def __call__(self, config, results, context) -> list[dict]:
-        children = []
-        while len(children) < self.n_children:
-            children.extend(_perturb(config))
-        return children[: self.n_children]
+        return _perturb_config_fallback(config, n=self.n_children)
 
 
 __all__ = ["LLMMutator", "RandomMutator"]

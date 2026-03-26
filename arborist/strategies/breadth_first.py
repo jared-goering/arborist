@@ -32,28 +32,13 @@ class BreadthFirstStrategy(Strategy):
         # Sort by depth (shallowest first), then by creation time
         return sorted(candidates, key=lambda n: (n["depth"], n["created_at"]))
 
-    def should_prune(
-        self,
-        node: dict[str, Any],
-        best_score: float,
-        siblings: list[dict[str, Any]],
-    ) -> tuple[bool, str]:
-        if node["score"] is None or best_score <= 0:
-            return False, ""
-
-        if node["score"] < best_score * self.prune_threshold:
-            return True, (
-                f"Score {node['score']:.4f} < {self.prune_threshold:.0%} of best "
-                f"({best_score:.4f})"
-            )
-        return False, ""
-
     def should_terminate(
         self,
         tree: dict[str, Any],
         completed: list[dict[str, Any]],
         config: dict[str, Any],
     ) -> tuple[bool, str]:
+        """Breadth-first terminates on limits only, no plateau detection."""
         max_experiments = config.get("max_experiments")
         if max_experiments and len(completed) >= max_experiments:
             return True, f"Reached max experiments ({max_experiments})"

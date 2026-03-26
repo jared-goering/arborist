@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arborist — Recording</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    color: #e8e8e8;
+    font-family: 'Inter', -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+  #recordingStatus {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    color: #ef4444;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    z-index: 100;
+  }
+  canvas#mainCanvas {
+    border-radius: 12px;
+  }
+</style>
+</head>
+<body>
+<div id="recordingStatus"></div>
+<canvas id="mainCanvas" width="1920" height="1080"></canvas>
+
+<script>
+// ============================================================
+// CONFIG
+// ============================================================
+const W = 1920;
+const H = 1080;
+const FPS = 30;
+const SPEED = 1.5;
+const TOTAL_LINEAR_FRAMES = 110;
+const PAUSE_FRAMES_END = FPS * 3; // 3 sec hold at end
+
+// ============================================================
+// DATA
+// ============================================================
+const linearData = {
+  improvements: [
+    { exp: 1, score: 0.2312, label: "baseline" },
+    { exp: 3, score: 0.2445, label: "temporal context" },
+    { exp: 4, score: 0.3185, label: "epoch position" },
+    { exp: 6, score: 0.3267, label: "rolling stats" },
+    { exp: 7, score: 0.3274, label: "trend divergence" },
+    { exp: 8, score: 0.3540, label: "z-normalization" },
+    { exp: 13, score: 0.3595, label: "percentile rank" },
+    { exp: 41, score: 0.3612, label: "wrist pitch angle" },
+    { exp: 66, score: 0.3632, label: "accel skewness" },
+  ],
+  totalExperiments: 100,
+};
+
+const treeNodes = [
+  { id: "006f1ad4", parent: null, depth: 0, score: 0.3319 },
+  { id: "9ab53511", parent: "006f1ad4", depth: 1, score: 0.3349 },
+  { id: "a151c645", parent: "006f1ad4", depth: 1, score: 0.2862 },
+  { id: "f1da02b1", parent: "9ab53511", depth: 2, score: 0.3377 },
+  { id: "d186ae2e", parent: "9ab53511", depth: 2, score: 0.3037 },
+  { id: "9fc3a92e", parent: "a151c645", depth: 2, score: 0.3002 },
+  { id: "74e666a2", parent: "a151c645", depth: 2, score: 0.3409 },
+  { id: "e8a3b1c2", parent: "d186ae2e", depth: 3, score: 0.3277 },
+  { id: "c4d5e6f7", parent: "f1da02b1", depth: 3, score: 0.3320 },
+  { id: "a1b2c3d4", parent: "f1da02b1", depth: 3, score: 0.3320 },
+  { id: "90532f45", parent: "74e666a2", depth: 3, score: 0.3385 },
+  { id: "bd9cf84b", parent: "74e666a2", depth: 3, score: 0.3321 },
+  { id: "1a2b3c4d", parent: "90532f45", depth: 4, score: 0.3012 },
+  { id: "5e6f7a8b", parent: "90532f45", depth: 4, score: 0.3565 },
+  { id: "2de3df99", parent: "90532f45", depth: 4, score: 0.3450 },
+  { id: "c2d3e4f5", parent: "bd9cf84b", depth: 4, score: 0.3427 },
+  { id: "82c363da", parent: "bd9cf84b", depth: 4, score: 0.2834 },
+  { id: "f6a7b8c9", parent: "5e6f7a8b", depth: 5, score: 0.3230 },
+  { id: "d0e1f2a3", parent: "5e6f7a8b", depth: 5, score: 0.3779 },
+  { id: "b4c5d6e7", parent: "2de3df99", depth: 5, score: 0.3145 },
+  { id: "a8b9c0d1", parent: "2de3df99", depth: 5, score: 0.3690 },
+  { id: "e2f3a4b5", parent: "c2d3e4f5", depth: 5, score: 0.3520 },
+  { id: "c6d7e8f9", parent: "c2d3e4f5", depth: 5, score: 0.3340 },
+];
+
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    var t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+}
+
+// Pre-generate linear dots
+const rng = mulberry32(42);
+const allLinearDots = [];
+let currentBestIdx = 0;
+for (let i = 1; i <= linearData.totalExperiments; i++) {
+  let isImprovement = false;
+  let score = 0;
+  for (let j = 0; j < linearData.improvements.length; j++) {
+    if (linearData.improvements[j].exp === i) {
+      isImprovement = true;
+      score = linearData.improvements[j].score;
+      currentBestIdx = j;
+      break;
+    }
+  }
+  if (!isImprovement) {
+    const currentBest = linearData.improvements[currentBestIdx].score;
+    score = currentBest + (rng() - 0.7) * 0.08;
+    score = Math.max(0.21, Math.min(0.39, score));
+  }
+  allLinearDots.push({ exp: i, score, kept: isImprovement });
+}
+
+// ============================================================
+// RENDERING
+// ============================================================
+const canvas = document.getElementById('mainCanvas');
+const ctx = canvas.getContext('2d');
+
+function renderFrame(animFrame) {
+  // Background
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle gradient bg
+  const grad = ctx.createRadialGradient(W*0.3, H*0.2, 0, W*0.3, H*0.2, W*0.5);
+  grad.addColorStop(0, 'rgba(34, 197, 94, 0.03)');
+  grad.addColorStop(1, 'transparent');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Title
+  ctx.save();
+  ctx.font = '800 72px Inter, sans-serif';
+  ctx.textAlign = 'center';
+
+  // Gradient text simulation
+  const tGrad = ctx.createLinearGradient(W/2 - 150, 0, W/2 + 150, 0);
+  tGrad.addColorStop(0, '#22c55e');
+  tGrad.addColorStop(0.5, '#4ade80');
+  tGrad.addColorStop(1, '#86efac');
+  ctx.fillStyle = tGrad;
+  ctx.fillText('arborist', W/2, 80);
+
+  ctx.font = '400 22px Inter, sans-serif';
+  ctx.fillStyle = '#737373';
+  ctx.fillText('Tree search for hyperparameter optimization', W/2, 115);
+  ctx.restore();
+
+  // Panel dimensions
+  const panelW = 820;
+  const panelH = 540;
+  const panelY = 150;
+  const gap = 40;
+  const leftX = (W - panelW * 2 - gap) / 2;
+  const rightX = leftX + panelW + gap;
+
+  // Draw panels
+  drawPanel(ctx, leftX, panelY, panelW, panelH);
+  drawPanel(ctx, rightX, panelY, panelW, panelH);
+
+  // Panel headers
+  ctx.font = '600 15px Inter, sans-serif';
+  ctx.fillStyle = '#a3a3a3';
+  ctx.textAlign = 'left';
+  ctx.fillText('LINEAR HILL CLIMBING', leftX + 28, panelY + 35);
+  ctx.fillText('TREE SEARCH', rightX + 28, panelY + 35);
+
+  // Badges
+  drawBadge(ctx, leftX + panelW - 120, panelY + 22, 'autoresearch', '#a1a1aa', 'rgba(161,161,170,0.1)');
+  drawBadge(ctx, rightX + panelW - 95, panelY + 22, 'arborist', '#4ade80', 'rgba(34,197,94,0.1)');
+
+  // VS divider
+  ctx.beginPath();
+  ctx.arc(W/2, panelY + panelH/2, 28, 0, Math.PI * 2);
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fill();
+  ctx.strokeStyle = '#2a2a2a';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.font = '700 14px Inter, sans-serif';
+  ctx.fillStyle = '#525252';
+  ctx.textAlign = 'center';
+  ctx.fillText('VS', W/2, panelY + panelH/2 + 5);
+
+  // Chart areas
+  const chartPad = { top: 55, right: 24, bottom: 55, left: 60 };
+  const chartW = panelW - chartPad.left - chartPad.right;
+  const chartH = panelH - chartPad.top - chartPad.bottom;
+
+  // Draw LINEAR chart
+  drawLinearChart(ctx, leftX + chartPad.left, panelY + chartPad.top, chartW, chartH, animFrame);
+
+  // Draw TREE chart
+  drawTreeChart(ctx, rightX + chartPad.left, panelY + chartPad.top, chartW, chartH, animFrame);
+
+  // Stats row
+  const statsY = panelY + panelH + 20;
+  drawStats(ctx, leftX, statsY, panelW, animFrame);
+  drawTreeStats(ctx, rightX, statsY, panelW, animFrame);
+
+  // Bottom text
+  const textY = statsY + 80;
+  ctx.font = '400 17px Inter, sans-serif';
+  ctx.fillStyle = '#404040';
+  ctx.textAlign = 'center';
+  const lines = [
+    'Linear search gets trapped in local optima after just 66 experiments.',
+    'Tree search branches into multiple directions using UCB, finding better solutions with fewer experiments.'
+  ];
+  lines.forEach((line, i) => {
+    ctx.fillText(line, W/2, textY + i * 28);
+  });
+
+  // Legend
+  const legY = textY + 70;
+  drawLegend(ctx, W/2, legY);
+}
+
+function drawPanel(ctx, x, y, w, h) {
+  ctx.fillStyle = '#111111';
+  ctx.strokeStyle = '#1f1f1f';
+  ctx.lineWidth = 1;
+  roundRect(ctx, x, y, w, h, 14);
+  ctx.fill();
+  ctx.stroke();
+
+  // Top highlight
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x + 14, y);
+  ctx.lineTo(x + w - 14, y);
+  const topGrad = ctx.createLinearGradient(x, y, x + w, y);
+  topGrad.addColorStop(0, 'transparent');
+  topGrad.addColorStop(0.5, 'rgba(255,255,255,0.04)');
+  topGrad.addColorStop(1, 'transparent');
+  ctx.strokeStyle = topGrad;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBadge(ctx, x, y, text, color, bg) {
+  ctx.font = '500 12px "JetBrains Mono", monospace';
+  const m = ctx.measureText(text);
+  const bw = m.width + 16;
+  const bh = 24;
+
+  ctx.fillStyle = bg;
+  roundRect(ctx, x, y, bw, bh, 5);
+  ctx.fill();
+
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  ctx.fillText(text, x + 8, y + 16);
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// ============================================================
+// LINEAR CHART
+// ============================================================
+function drawLinearChart(ctx, ox, oy, cw, ch, frame) {
+  const minS = 0.20, maxS = 0.40;
+  const maxExp = 100;
+  const x = (e) => ox + (e / maxExp) * cw;
+  const y = (s) => oy + ch - ((s - minS) / (maxS - minS)) * ch;
+  const visibleExp = Math.min(frame, maxExp);
+
+  // Grid
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 1;
+  for (let s = 0.20; s <= 0.40; s += 0.05) {
+    ctx.beginPath();
+    ctx.moveTo(ox, y(s));
+    ctx.lineTo(ox + cw, y(s));
+    ctx.stroke();
+  }
+
+  // Y labels
+  ctx.fillStyle = '#3a3a3a';
+  ctx.font = '12px "JetBrains Mono", monospace';
+  ctx.textAlign = 'right';
+  for (let s = 0.20; s <= 0.40; s += 0.05) {
+    ctx.fillText(s.toFixed(2), ox - 10, y(s) + 4);
+  }
+
+  // X labels
+  ctx.textAlign = 'center';
+  for (let e = 0; e <= maxExp; e += 20) {
+    ctx.fillText(e, x(e), oy + ch + 20);
+  }
+  ctx.font = '12px Inter, sans-serif';
+  ctx.fillText('Experiment #', ox + cw/2, oy + ch + 38);
+
+  // Discarded dots
+  for (const dot of allLinearDots) {
+    if (dot.exp > visibleExp) break;
+    if (dot.kept) continue;
+    ctx.beginPath();
+    ctx.arc(x(dot.exp), y(dot.score), 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(161,161,170,0.15)';
+    ctx.fill();
+  }
+
+  // Running best line
+  const visImps = linearData.improvements.filter(imp => imp.exp <= visibleExp);
+  if (visImps.length > 0) {
+    ctx.beginPath();
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = 'rgba(96,165,250,0.3)';
+    ctx.shadowBlur = 8;
+
+    for (let i = 0; i < visImps.length; i++) {
+      const imp = visImps[i];
+      const nextExp = i < visImps.length - 1 ? visImps[i + 1].exp : visibleExp;
+      if (i === 0) ctx.moveTo(x(imp.exp), y(imp.score));
+      else ctx.lineTo(x(imp.exp), y(imp.score));
+      ctx.lineTo(x(nextExp), y(imp.score));
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Kept dots with glow
+    for (const imp of visImps) {
+      // Glow
+      ctx.beginPath();
+      ctx.arc(x(imp.exp), y(imp.score), 10, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(74,222,128,0.15)';
+      ctx.fill();
+      // Dot
+      ctx.beginPath();
+      ctx.arc(x(imp.exp), y(imp.score), 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#4ade80';
+      ctx.fill();
+    }
+  }
+
+  // Plateau marker
+  if (visibleExp > 70) {
+    const px = x(66);
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = 'rgba(239,68,68,0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px, oy);
+    ctx.lineTo(px, oy + ch);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Shade wasted region
+    if (visibleExp > 75) {
+      ctx.fillStyle = 'rgba(239,68,68,0.03)';
+      ctx.fillRect(px, oy, x(visibleExp) - px, ch);
+
+      ctx.font = '12px Inter, sans-serif';
+      ctx.fillStyle = 'rgba(239,68,68,0.5)';
+      ctx.textAlign = 'left';
+      ctx.fillText('← stuck here', px + 6, oy + 18);
+      const wasted = visibleExp - 66;
+      if (wasted > 5) {
+        ctx.fillText(`${wasted} wasted experiments`, px + 6, oy + 34);
+      }
+    }
+    ctx.restore();
+  }
+}
+
+// ============================================================
+// TREE CHART
+// ============================================================
+function drawTreeChart(ctx, ox, oy, cw, ch, frame) {
+  const minS = 0.20, maxS = 0.40;
+  const maxDepth = 5;
+  const xd = (d) => ox + ((d + 0.5) / (maxDepth + 1)) * cw;
+  const ys = (s) => oy + ch - ((s - minS) / (maxS - minS)) * ch;
+
+  const visibleCount = Math.min(Math.floor(frame / 3) + 1, treeNodes.length);
+  const visible = treeNodes.slice(0, visibleCount);
+
+  // Grid
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 1;
+  for (let s = 0.20; s <= 0.40; s += 0.05) {
+    ctx.beginPath();
+    ctx.moveTo(ox, ys(s));
+    ctx.lineTo(ox + cw, ys(s));
+    ctx.stroke();
+  }
+
+  // Y labels
+  ctx.fillStyle = '#3a3a3a';
+  ctx.font = '12px "JetBrains Mono", monospace';
+  ctx.textAlign = 'right';
+  for (let s = 0.20; s <= 0.40; s += 0.05) {
+    ctx.fillText(s.toFixed(2), ox - 10, ys(s) + 4);
+  }
+
+  // X labels
+  ctx.textAlign = 'center';
+  for (let d = 0; d <= maxDepth; d++) {
+    ctx.fillText(`d${d}`, xd(d), oy + ch + 20);
+  }
+  ctx.font = '12px Inter, sans-serif';
+  ctx.fillText('Depth (branching)', ox + cw/2, oy + ch + 38);
+
+  // Position nodes
+  const depthSlots = {};
+  const positions = {};
+  for (const node of visible) {
+    const d = node.depth;
+    if (!depthSlots[d]) depthSlots[d] = 0;
+    const slot = depthSlots[d]++;
+    const jitter = (slot - 1) * 14;
+    positions[node.id] = { x: xd(d) + jitter, y: ys(node.score) };
+  }
+
+  // Edges
+  for (const node of visible) {
+    if (!node.parent || !positions[node.parent]) continue;
+    const from = positions[node.parent];
+    const to = positions[node.id];
+    const good = node.score > 0.34;
+
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    const cpx = (from.x + to.x) / 2;
+    ctx.bezierCurveTo(cpx, from.y, cpx, to.y, to.x, to.y);
+
+    if (good) {
+      ctx.strokeStyle = 'rgba(74,222,128,0.35)';
+      ctx.lineWidth = 2;
+      ctx.shadowColor = 'rgba(74,222,128,0.15)';
+      ctx.shadowBlur = 6;
+    } else {
+      ctx.strokeStyle = 'rgba(161,161,170,0.12)';
+      ctx.lineWidth = 1;
+      ctx.shadowBlur = 0;
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // Find best
+  let runBest = 0, bestId = null;
+  for (const n of visible) { if (n.score > runBest) { runBest = n.score; bestId = n.id; } }
+
+  // Nodes
+  for (const node of visible) {
+    const pos = positions[node.id];
+    const isBest = node.id === bestId;
+    const isGood = node.score > 0.34;
+
+    if (isBest) {
+      const g = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, 22);
+      g.addColorStop(0, 'rgba(74,222,128,0.35)');
+      g.addColorStop(1, 'rgba(74,222,128,0)');
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, 22, 0, Math.PI * 2);
+      ctx.fillStyle = g;
+      ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, isBest ? 7 : 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = isBest ? '#4ade80' : isGood ? 'rgba(74,222,128,0.6)' : 'rgba(161,161,170,0.3)';
+    ctx.fill();
+
+    if (isBest || node.score > 0.355) {
+      ctx.font = '11px "JetBrains Mono", monospace';
+      ctx.fillStyle = isBest ? '#4ade80' : 'rgba(74,222,128,0.5)';
+      ctx.textAlign = 'left';
+      ctx.fillText(node.score.toFixed(4), pos.x + 10, pos.y + 4);
+    }
+  }
+
+  // UCB label
+  if (visibleCount > 6) {
+    ctx.font = '12px Inter, sans-serif';
+    ctx.fillStyle = 'rgba(96,165,250,0.4)';
+    ctx.textAlign = 'left';
+    ctx.fillText('UCB balances explore ↔ exploit', ox + 4, oy + 14);
+  }
+
+  // Linear plateau reference line
+  if (visibleCount >= treeNodes.length) {
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = 'rgba(239,68,68,0.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(ox, ys(0.3632));
+    ctx.lineTo(ox + cw, ys(0.3632));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '11px Inter, sans-serif';
+    ctx.fillStyle = 'rgba(239,68,68,0.5)';
+    ctx.textAlign = 'right';
+    ctx.fillText('linear plateau: 0.3632', ox + cw, ys(0.3632) + 14);
+    ctx.restore();
+  }
+}
+
+// ============================================================
+// STATS
+// ============================================================
+function drawStats(ctx, panelX, y, panelW, frame) {
+  const visExp = Math.min(frame, 100);
+  const visImps = linearData.improvements.filter(imp => imp.exp <= visExp);
+  const best = visImps.length > 0 ? visImps[visImps.length - 1].score : 0;
+
+  const stats = [
+    { value: best.toFixed(4), label: 'BEST F1', color: '#a1a1aa' },
+    { value: `${visExp}`, label: 'EXPERIMENTS', color: '#a1a1aa' },
+    { value: `${visImps.length}`, label: 'IMPROVEMENTS', color: '#a1a1aa' },
+  ];
+
+  const sw = panelW / 3;
+  stats.forEach((s, i) => {
+    const cx = panelX + sw * i + sw / 2;
+    ctx.font = '700 26px "JetBrains Mono", monospace';
+    ctx.fillStyle = s.color;
+    ctx.textAlign = 'center';
+    ctx.fillText(s.value, cx, y + 8);
+    ctx.font = '500 10px Inter, sans-serif';
+    ctx.fillStyle = '#525252';
+    ctx.fillText(s.label, cx, y + 26);
+  });
+}
+
+function drawTreeStats(ctx, panelX, y, panelW, frame) {
+  const visibleCount = Math.min(Math.floor(frame / 3) + 1, treeNodes.length);
+  const visible = treeNodes.slice(0, visibleCount);
+  let best = 0;
+  for (const n of visible) if (n.score > best) best = n.score;
+  const branches = new Set(visible.filter(n => n.parent).map(n => n.parent)).size;
+
+  const stats = [
+    { value: best.toFixed(4), label: 'BEST F1', color: '#4ade80' },
+    { value: `${visibleCount}`, label: 'EXPERIMENTS', color: '#4ade80' },
+    { value: `${branches}`, label: 'BRANCHES', color: '#60a5fa' },
+  ];
+
+  const sw = panelW / 3;
+  stats.forEach((s, i) => {
+    const cx = panelX + sw * i + sw / 2;
+    ctx.font = '700 26px "JetBrains Mono", monospace';
+    ctx.fillStyle = s.color;
+    ctx.textAlign = 'center';
+    ctx.fillText(s.value, cx, y + 8);
+    ctx.font = '500 10px Inter, sans-serif';
+    ctx.fillStyle = '#525252';
+    ctx.fillText(s.label, cx, y + 26);
+  });
+}
+
+function drawLegend(ctx, cx, y) {
+  const items = [
+    { color: '#4ade80', label: 'Kept improvement' },
+    { color: 'rgba(161,161,170,0.3)', label: 'Discarded' },
+    { color: '#60a5fa', label: 'Running best' },
+  ];
+  const totalW = items.length * 160;
+  let sx = cx - totalW / 2;
+  items.forEach(item => {
+    ctx.beginPath();
+    ctx.arc(sx + 6, y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = item.color;
+    ctx.fill();
+    ctx.font = '12px Inter, sans-serif';
+    ctx.fillStyle = '#525252';
+    ctx.textAlign = 'left';
+    ctx.fillText(item.label, sx + 16, y + 4);
+    sx += 160;
+  });
+}
+
+// ============================================================
+// RECORDING
+// ============================================================
+async function record() {
+  const statusEl = document.getElementById('recordingStatus');
+  statusEl.textContent = '● RECORDING';
+
+  const stream = canvas.captureStream(FPS);
+  const recorder = new MediaRecorder(stream, {
+    mimeType: 'video/webm;codecs=vp9',
+    videoBitsPerSecond: 8000000
+  });
+
+  const chunks = [];
+  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'arborist-animation.webm';
+    a.click();
+    statusEl.textContent = '✓ SAVED (check downloads)';
+  };
+
+  recorder.start();
+
+  // Intro pause (1 sec)
+  const introFrames = FPS * 1;
+  for (let i = 0; i < introFrames; i++) {
+    renderFrame(0);
+    await new Promise(r => setTimeout(r, 1000 / FPS));
+  }
+
+  // Animation
+  const totalAnimFrames = Math.max(TOTAL_LINEAR_FRAMES, treeNodes.length * 3) + 5;
+  for (let f = 0; f <= totalAnimFrames; f++) {
+    renderFrame(f * SPEED);
+    await new Promise(r => setTimeout(r, 1000 / FPS));
+    statusEl.textContent = `● RECORDING frame ${f}/${totalAnimFrames}`;
+  }
+
+  // End hold
+  for (let i = 0; i < PAUSE_FRAMES_END; i++) {
+    renderFrame(totalAnimFrames * SPEED);
+    await new Promise(r => setTimeout(r, 1000 / FPS));
+  }
+
+  recorder.stop();
+}
+
+// Auto-start recording
+window.addEventListener('load', () => {
+  // Render first frame immediately
+  renderFrame(0);
+  // Start recording after fonts load
+  setTimeout(record, 1000);
+});
+</script>
+</body>
+</html>

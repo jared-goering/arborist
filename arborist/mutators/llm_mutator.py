@@ -5,58 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import random
-import re
 from typing import Any
 
 from arborist.manager import BranchContext
 from arborist.store import Store
+from arborist.utils import parse_json, parse_json_robust
 
 logger = logging.getLogger(__name__)
 
-
-def _parse_json_robustly(text: str) -> Any:
-    """Parse JSON from LLM output, handling markdown fences, comments, etc."""
-    text = text.strip()
-
-    # Strip markdown code fences
-    if text.startswith("```"):
-        lines = text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        text = "\n".join(lines).strip()
-
-    # Try direct parse first
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Strip single-line comments (// ...)
-    cleaned = re.sub(r"//[^\n]*", "", text)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    # Try to extract a JSON array from the text
-    array_match = re.search(r"\[[\s\S]*\]", text)
-    if array_match:
-        try:
-            return json.loads(array_match.group())
-        except json.JSONDecodeError:
-            pass
-
-    # Try to extract a JSON object with a "configs" key
-    obj_match = re.search(r"\{[\s\S]*\}", text)
-    if obj_match:
-        try:
-            parsed = json.loads(obj_match.group())
-            if isinstance(parsed, dict) and "configs" in parsed:
-                return parsed["configs"]
-            return parsed
-        except json.JSONDecodeError:
-            pass
-
-    return None
+# Re-export for backwards compatibility (tests import this name)
+_parse_json_robustly = parse_json_robust
 
 
 def _perturb_config_fallback(
@@ -103,17 +61,6 @@ def _clip_config(config: dict[str, Any], param_bounds: dict) -> dict[str, Any]:
     return clipped
 
 
-def _safe_json(value: str | dict | None) -> dict | None:
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value
-    try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return None
-
-
 def _build_tree_context_prompt(
     config: dict[str, Any],
     results: dict[str, Any],
@@ -151,7 +98,7 @@ def _build_tree_context_prompt(
         if top_nodes:
             top_list = []
             for n in top_nodes:
-                cfg = _safe_json(n["config"]) or {}
+                cfg = parse_json(n["config"]) or {}
                 top_list.append({
                     "score": round(n["score"], 4) if n["score"] else None,
                     "depth": n["depth"],
@@ -178,7 +125,7 @@ def _build_tree_context_prompt(
         if failed_nodes:
             failed_list = []
             for n in failed_nodes[:10]:
-                cfg = _safe_json(n["config"]) or {}
+                cfg = parse_json(n["config"]) or {}
                 reason = n.get("prune_reason") or n.get("error") or "unknown"
                 score = n.get("score")
                 failed_list.append({

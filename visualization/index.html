@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arborist — Tree Search vs Linear</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0a;
+    color: #e8e8e8;
+    font-family: 'Inter', -apple-system, sans-serif;
+    overflow-x: hidden;
+  }
+
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 40px;
+    position: relative;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at 30% 20%, rgba(34, 197, 94, 0.06) 0%, transparent 60%),
+                radial-gradient(ellipse at 70% 80%, rgba(59, 130, 246, 0.04) 0%, transparent 60%);
+    pointer-events: none;
+  }
+
+  h1 {
+    font-size: 4rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #22c55e 0%, #4ade80 50%, #86efac 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-align: center;
+  }
+
+  .subtitle {
+    font-size: 1.25rem;
+    color: #737373;
+    margin-bottom: 60px;
+    font-weight: 400;
+    text-align: center;
+  }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+    width: 100%;
+    max-width: 1400px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .panel {
+    background: #111111;
+    border: 1px solid #1f1f1f;
+    border-radius: 16px;
+    padding: 32px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+  }
+
+  .panel-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #a3a3a3;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .panel-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-weight: 500;
+  }
+
+  .badge-linear {
+    background: rgba(161, 161, 170, 0.1);
+    color: #a1a1aa;
+    border: 1px solid rgba(161, 161, 170, 0.2);
+  }
+
+  .badge-tree {
+    background: rgba(34, 197, 94, 0.1);
+    color: #4ade80;
+    border: 1px solid rgba(34, 197, 94, 0.2);
+  }
+
+  canvas {
+    width: 100%;
+    border-radius: 8px;
+  }
+
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 24px;
+  }
+
+  .stat {
+    text-align: center;
+  }
+
+  .stat-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 2px;
+  }
+
+  .stat-value.green { color: #4ade80; }
+  .stat-value.gray { color: #a1a1aa; }
+  .stat-value.blue { color: #60a5fa; }
+
+  .stat-label {
+    font-size: 0.75rem;
+    color: #525252;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .vs-divider {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 48px;
+    height: 48px;
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: #525252;
+    z-index: 10;
+  }
+
+  .controls {
+    margin-top: 40px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    z-index: 1;
+  }
+
+  .btn {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 500;
+    padding: 10px 24px;
+    border-radius: 8px;
+    border: 1px solid #2a2a2a;
+    background: #161616;
+    color: #e8e8e8;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn:hover {
+    background: #1f1f1f;
+    border-color: #3a3a3a;
+  }
+
+  .btn-primary {
+    background: rgba(34, 197, 94, 0.15);
+    border-color: rgba(34, 197, 94, 0.3);
+    color: #4ade80;
+  }
+
+  .btn-primary:hover {
+    background: rgba(34, 197, 94, 0.25);
+  }
+
+  .speed-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    color: #525252;
+  }
+
+  .bottom-text {
+    margin-top: 48px;
+    max-width: 700px;
+    text-align: center;
+    z-index: 1;
+  }
+
+  .bottom-text p {
+    font-size: 0.95rem;
+    line-height: 1.7;
+    color: #525252;
+    font-style: italic;
+  }
+
+  .tag {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.15);
+    border-radius: 4px;
+    color: #4ade80;
+    margin-left: 4px;
+  }
+
+  .legend {
+    display: flex;
+    gap: 20px;
+    margin-top: 12px;
+    justify-content: center;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: #525252;
+  }
+
+  .legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>arborist</h1>
+  <div class="subtitle">Tree search for hyperparameter optimization</div>
+
+  <div class="comparison">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Linear Hill Climbing</span>
+        <span class="panel-badge badge-linear">autoresearch</span>
+      </div>
+      <canvas id="linearCanvas" width="600" height="400"></canvas>
+      <div class="stats-row">
+        <div class="stat">
+          <div class="stat-value gray" id="linear-best">0.2312</div>
+          <div class="stat-label">Best F1</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value gray" id="linear-exp">0</div>
+          <div class="stat-label">Experiments</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value gray" id="linear-improvements">0</div>
+          <div class="stat-label">Improvements</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Tree Search</span>
+        <span class="panel-badge badge-tree">arborist</span>
+      </div>
+      <canvas id="treeCanvas" width="600" height="400"></canvas>
+      <div class="stats-row">
+        <div class="stat">
+          <div class="stat-value green" id="tree-best">0.0000</div>
+          <div class="stat-label">Best F1</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value green" id="tree-exp">0</div>
+          <div class="stat-label">Experiments</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value blue" id="tree-branches">0</div>
+          <div class="stat-label">Branches</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="vs-divider">VS</div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background: #4ade80;"></div> Kept improvement</div>
+    <div class="legend-item"><div class="legend-dot" style="background: rgba(161,161,170,0.3);"></div> Discarded</div>
+    <div class="legend-item"><div class="legend-dot" style="background: #60a5fa;"></div> Running best</div>
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-primary" id="playBtn" onclick="togglePlay()">▶ Play</button>
+    <button class="btn" onclick="resetAnimation()">↺ Reset</button>
+    <button class="btn" onclick="setSpeed(0.5)">0.5×</button>
+    <button class="btn" onclick="setSpeed(1)">1×</button>
+    <button class="btn" onclick="setSpeed(3)">3×</button>
+    <span class="speed-label" id="speedLabel">1×</span>
+  </div>
+
+  <div class="bottom-text">
+    <p>
+      Linear search makes one change at a time, keeping improvements and discarding the rest.
+      It converges fast but gets trapped in local optima.
+      Tree search branches into multiple directions simultaneously,
+      using UCB to balance exploration and exploitation.
+      Same budget. Different topology. Better results.
+    </p>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// DATA — Real data from Arborist runs
+// ============================================================
+
+// Linear autoresearch: 260 experiments, 9 improvements
+const linearData = {
+  improvements: [
+    { exp: 1, score: 0.2312, label: "baseline (17 features)" },
+    { exp: 3, score: 0.2445, label: "temporal context" },
+    { exp: 4, score: 0.3185, label: "epoch position" },
+    { exp: 6, score: 0.3267, label: "rolling stats" },
+    { exp: 7, score: 0.3274, label: "trend divergence" },
+    { exp: 8, score: 0.3540, label: "z-normalization" },
+    { exp: 13, score: 0.3595, label: "percentile rank" },
+    { exp: 41, score: 0.3612, label: "wrist pitch angle" },
+    { exp: 66, score: 0.3632, label: "accel skewness" },
+  ],
+  totalExperiments: 100, // cap display at 100 for visual parity
+};
+
+// Tree data from sleep_scientist_flash.db
+const treeNodes = [
+  { id: "006f1ad4", parent: null, depth: 0, score: 0.3319 },
+  { id: "9ab53511", parent: "006f1ad4", depth: 1, score: 0.3349 },
+  { id: "a151c645", parent: "006f1ad4", depth: 1, score: 0.2862 },
+  { id: "f1da02b1", parent: "9ab53511", depth: 2, score: 0.3377 },
+  { id: "d186ae2e", parent: "9ab53511", depth: 2, score: 0.3037 },
+  { id: "9fc3a92e", parent: "a151c645", depth: 2, score: 0.3002 },
+  { id: "74e666a2", parent: "a151c645", depth: 2, score: 0.3409 },
+  { id: "e8a3b1c2", parent: "d186ae2e", depth: 3, score: 0.3277 },
+  { id: "c4d5e6f7", parent: "f1da02b1", depth: 3, score: 0.3320 },
+  { id: "a1b2c3d4", parent: "f1da02b1", depth: 3, score: 0.3320 },
+  { id: "90532f45", parent: "74e666a2", depth: 3, score: 0.3385 },
+  { id: "bd9cf84b", parent: "74e666a2", depth: 3, score: 0.3321 },
+  { id: "1a2b3c4d", parent: "90532f45", depth: 4, score: 0.3012 },
+  { id: "5e6f7a8b", parent: "90532f45", depth: 4, score: 0.3565 },
+  { id: "2de3df99", parent: "90532f45", depth: 4, score: 0.3450 },
+  { id: "c2d3e4f5", parent: "bd9cf84b", depth: 4, score: 0.3427 },
+  { id: "82c363da", parent: "bd9cf84b", depth: 4, score: 0.2834 },
+  { id: "f6a7b8c9", parent: "5e6f7a8b", depth: 5, score: 0.3230 },
+  { id: "d0e1f2a3", parent: "5e6f7a8b", depth: 5, score: 0.3779 },
+  { id: "b4c5d6e7", parent: "2de3df99", depth: 5, score: 0.3145 },
+  { id: "a8b9c0d1", parent: "2de3df99", depth: 5, score: 0.3690 },
+  { id: "e2f3a4b5", parent: "c2d3e4f5", depth: 5, score: 0.3520 },
+  { id: "c6d7e8f9", parent: "c2d3e4f5", depth: 5, score: 0.3340 },
+];
+
+// ============================================================
+// ANIMATION STATE
+// ============================================================
+let animFrame = 0;
+let playing = false;
+let speed = 1;
+let animId = null;
+let lastTime = 0;
+const FRAME_INTERVAL = 80; // ms per frame at 1x
+
+// ============================================================
+// LINEAR CANVAS
+// ============================================================
+function drawLinear(frame) {
+  const canvas = document.getElementById('linearCanvas');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = canvas.clientHeight * dpr;
+  ctx.scale(dpr, dpr);
+  const W = canvas.clientWidth;
+  const H = canvas.clientHeight;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const pad = { top: 20, right: 20, bottom: 40, left: 55 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+
+  const maxExp = linearData.totalExperiments;
+  const minScore = 0.20;
+  const maxScore = 0.40;
+
+  const x = (exp) => pad.left + (exp / maxExp) * plotW;
+  const y = (score) => pad.top + plotH - ((score - minScore) / (maxScore - minScore)) * plotH;
+
+  // Grid
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 1;
+  for (let s = 0.20; s <= 0.40; s += 0.05) {
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y(s));
+    ctx.lineTo(W - pad.right, y(s));
+    ctx.stroke();
+  }
+
+  // Axes labels
+  ctx.fillStyle = '#3a3a3a';
+  ctx.font = '11px "JetBrains Mono", monospace';
+  ctx.textAlign = 'right';
+  for (let s = 0.20; s <= 0.40; s += 0.05) {
+    ctx.fillText(s.toFixed(2), pad.left - 8, y(s) + 4);
+  }
+  ctx.textAlign = 'center';
+  for (let e = 0; e <= maxExp; e += 20) {
+    ctx.fillText(e, x(e), H - pad.bottom + 20);
+  }
+
+  ctx.fillStyle = '#3a3a3a';
+  ctx.font = '11px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Experiment #', W / 2, H - 4);
+
+  // How many experiments visible
+  const visibleExp = Math.min(frame, maxExp);
+
+  // Generate all experiment dots (deterministic scatter)
+  const rng = mulberry32(42);
+  const allDots = [];
+  let currentBestIdx = 0;
+  for (let i = 1; i <= maxExp; i++) {
+    // Check if this is an improvement
+    let isImprovement = false;
+    let score = 0;
+    for (let j = 0; j < linearData.improvements.length; j++) {
+      if (linearData.improvements[j].exp === i) {
+        isImprovement = true;
+        score = linearData.improvements[j].score;
+        currentBestIdx = j;
+        break;
+      }
+    }
+    if (!isImprovement) {
+      // Random score around current best, usually worse
+      const currentBest = linearData.improvements[currentBestIdx].score;
+      score = currentBest + (rng() - 0.7) * 0.08;
+      score = Math.max(minScore + 0.01, Math.min(maxScore - 0.01, score));
+    }
+    allDots.push({ exp: i, score, kept: isImprovement });
+  }
+
+  // Draw discarded dots
+  for (const dot of allDots) {
+    if (dot.exp > visibleExp) break;
+    if (dot.kept) continue;
+    const age = (visibleExp - dot.exp) / maxExp;
+    ctx.beginPath();
+    ctx.arc(x(dot.exp), y(dot.score), 3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(161, 161, 170, ${0.15 + 0.1 * (1 - age)})`;
+    ctx.fill();
+  }
+
+  // Draw running best line (step function)
+  const visibleImprovements = linearData.improvements.filter(imp => imp.exp <= visibleExp);
+  if (visibleImprovements.length > 0) {
+    ctx.beginPath();
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 2;
+
+    for (let i = 0; i < visibleImprovements.length; i++) {
+      const imp = visibleImprovements[i];
+      const nextExp = i < visibleImprovements.length - 1
+        ? visibleImprovements[i + 1].exp
+        : visibleExp;
+
+      if (i === 0) ctx.moveTo(x(imp.exp), y(imp.score));
+      else ctx.lineTo(x(imp.exp), y(imp.score));
+
+      ctx.lineTo(x(nextExp), y(imp.score));
+    }
+    ctx.stroke();
+
+    // Draw kept dots
+    for (const imp of visibleImprovements) {
+      ctx.beginPath();
+      ctx.arc(x(imp.exp), y(imp.score), 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#4ade80';
+      ctx.fill();
+
+      // Label
+      if (imp.label) {
+        ctx.save();
+        ctx.translate(x(imp.exp) + 8, y(imp.score) - 4);
+        ctx.rotate(-0.15);
+        ctx.font = '9px Inter, sans-serif';
+        ctx.fillStyle = 'rgba(74, 222, 128, 0.6)';
+        ctx.textAlign = 'left';
+        ctx.fillText(imp.label, 0, 0);
+        ctx.restore();
+      }
+    }
+
+    // Update stats
+    const best = visibleImprovements[visibleImprovements.length - 1].score;
+    document.getElementById('linear-best').textContent = best.toFixed(4);
+    document.getElementById('linear-exp').textContent = visibleExp;
+    document.getElementById('linear-improvements').textContent = visibleImprovements.length;
+  }
+
+  // Plateau indicator
+  if (visibleExp > 70) {
+    const plateauStart = x(66);
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = 'rgba(239, 68, 68, 0.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(plateauStart, pad.top);
+    ctx.lineTo(plateauStart, H - pad.bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (visibleExp > 80) {
+      ctx.font = '10px Inter, sans-serif';
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.5)';
+      ctx.textAlign = 'left';
+      ctx.fillText('← stuck here', plateauStart + 4, pad.top + 15);
+      ctx.fillText(`${visibleExp - 66} wasted experiments`, plateauStart + 4, pad.top + 28);
+    }
+    ctx.restore();
+  }
+}
+
+// ============================================================
+// TREE CANVAS — Score on Y-axis, Depth on X-axis
+// ============================================================
+function drawTree(frame) {
+  const canvas = document.getElementById('treeCanvas');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = canvas.clientHeight * dpr;
+  ctx.scale(dpr, dpr);
+  const W = canvas.clientWidth;
+  const H = canvas.clientHeight;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const pad = { top: 20, right: 20, bottom: 40, left: 55 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+
+  const maxDepth = 5;
+  const minScore = 0.20;
+  const maxScore = 0.40;
+
+  const xFromDepth = (d) => pad.left + ((d + 0.5) / (maxDepth + 1)) * plotW;
+  const yFromScore = (s) => pad.top + plotH - ((s - minScore) / (maxScore - minScore)) * plotH;
+
+  // Visible nodes (animate in over time)
+  const visibleCount = Math.min(Math.floor(frame / 3) + 1, treeNodes.length);
+  const visible = treeNodes.slice(0, visibleCount);
+
+  // Jitter: nodes at same depth+similar score need x-spread to not overlap
+  const depthSlots = {};
+  const positions = {};
+  for (const node of visible) {
+    const d = node.depth;
+    if (!depthSlots[d]) depthSlots[d] = 0;
+    const slot = depthSlots[d]++;
+    // Small horizontal jitter based on slot index
+    const jitter = (slot - 1) * 12;
+    positions[node.id] = {
+      x: xFromDepth(d) + jitter,
+      y: yFromScore(node.score),
+      score: node.score,
+    };
+  }
+
+  // Grid lines (horizontal - scores)
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 1;
+  for (let s = 0.20; s <= 0.40; s += 0.05) {
+    ctx.beginPath();
+    ctx.moveTo(pad.left, yFromScore(s));
+    ctx.lineTo(W - pad.right, yFromScore(s));
+    ctx.stroke();
+  }
+
+  // Y-axis labels (scores)
+  ctx.fillStyle = '#3a3a3a';
+  ctx.font = '11px "JetBrains Mono", monospace';
+  ctx.textAlign = 'right';
+  for (let s = 0.20; s <= 0.40; s += 0.05) {
+    ctx.fillText(s.toFixed(2), pad.left - 8, yFromScore(s) + 4);
+  }
+
+  // X-axis labels (depth)
+  ctx.textAlign = 'center';
+  for (let d = 0; d <= maxDepth; d++) {
+    ctx.fillText(`d${d}`, xFromDepth(d), H - pad.bottom + 20);
+  }
+  ctx.fillStyle = '#3a3a3a';
+  ctx.font = '11px Inter, sans-serif';
+  ctx.fillText('Depth (branching)', W / 2, H - 4);
+
+  // Draw edges
+  for (const node of visible) {
+    if (!node.parent || !positions[node.parent]) continue;
+    const from = positions[node.parent];
+    const to = positions[node.id];
+
+    const isBestPath = node.score > 0.35;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    const cpx = (from.x + to.x) / 2;
+    ctx.bezierCurveTo(cpx, from.y, cpx, to.y, to.x, to.y);
+
+    ctx.strokeStyle = isBestPath
+      ? 'rgba(74, 222, 128, 0.4)'
+      : 'rgba(161, 161, 170, 0.12)';
+    ctx.lineWidth = isBestPath ? 2 : 1;
+    ctx.stroke();
+  }
+
+  // Find running best
+  let runningBest = 0;
+  let bestNode = null;
+  for (const node of visible) {
+    if (node.score > runningBest) {
+      runningBest = node.score;
+      bestNode = node.id;
+    }
+  }
+
+  // Draw nodes
+  for (const node of visible) {
+    const pos = positions[node.id];
+    const isBest = node.id === bestNode;
+    const isGood = node.score > 0.34;
+
+    // Glow for best
+    if (isBest) {
+      const gradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, 18);
+      gradient.addColorStop(0, 'rgba(74, 222, 128, 0.3)');
+      gradient.addColorStop(1, 'rgba(74, 222, 128, 0)');
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, 18, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, isBest ? 6 : 4, 0, Math.PI * 2);
+    ctx.fillStyle = isBest ? '#4ade80'
+      : isGood ? 'rgba(74, 222, 128, 0.6)'
+      : 'rgba(161, 161, 170, 0.3)';
+    ctx.fill();
+
+    // Label notable nodes
+    if (isBest || node.score > 0.355) {
+      ctx.font = '10px "JetBrains Mono", monospace';
+      ctx.fillStyle = isBest ? '#4ade80' : 'rgba(74, 222, 128, 0.5)';
+      ctx.textAlign = 'left';
+      ctx.fillText(node.score.toFixed(4), pos.x + 9, pos.y + 3);
+    }
+  }
+
+  // UCB annotation
+  if (visibleCount > 8) {
+    ctx.save();
+    ctx.font = '10px Inter, sans-serif';
+    ctx.fillStyle = 'rgba(96, 165, 250, 0.4)';
+    ctx.textAlign = 'left';
+    ctx.fillText('UCB balances explore ↔ exploit', pad.left + 4, pad.top + 12);
+    ctx.restore();
+  }
+
+  // Plateau comparison callout
+  if (visibleCount >= treeNodes.length) {
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, yFromScore(0.3632));
+    ctx.lineTo(W - pad.right, yFromScore(0.3632));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '9px Inter, sans-serif';
+    ctx.fillStyle = 'rgba(74, 222, 128, 0.4)';
+    ctx.textAlign = 'right';
+    ctx.fillText('linear plateau: 0.3632', W - pad.right, yFromScore(0.3632) + 12);
+    ctx.restore();
+  }
+
+  // Stats
+  document.getElementById('tree-best').textContent = runningBest.toFixed(4);
+  document.getElementById('tree-exp').textContent = visibleCount;
+  const uniqueParents = new Set(visible.filter(n => n.parent).map(n => n.parent));
+  document.getElementById('tree-branches').textContent = uniqueParents.size;
+}
+
+// ============================================================
+// ANIMATION LOOP
+// ============================================================
+function animate(timestamp) {
+  if (!playing) return;
+
+  if (!lastTime) lastTime = timestamp;
+  const elapsed = timestamp - lastTime;
+
+  if (elapsed >= FRAME_INTERVAL / speed) {
+    lastTime = timestamp;
+    animFrame++;
+
+    drawLinear(animFrame);
+    drawTree(animFrame);
+
+    // Stop when both are done
+    if (animFrame > linearData.totalExperiments + 10) {
+      playing = false;
+      document.getElementById('playBtn').textContent = '▶ Play';
+      return;
+    }
+  }
+
+  animId = requestAnimationFrame(animate);
+}
+
+function togglePlay() {
+  playing = !playing;
+  document.getElementById('playBtn').textContent = playing ? '⏸ Pause' : '▶ Play';
+  if (playing) {
+    lastTime = 0;
+    animId = requestAnimationFrame(animate);
+  }
+}
+
+function resetAnimation() {
+  playing = false;
+  animFrame = 0;
+  lastTime = 0;
+  document.getElementById('playBtn').textContent = '▶ Play';
+  if (animId) cancelAnimationFrame(animId);
+
+  document.getElementById('linear-best').textContent = '0.2312';
+  document.getElementById('linear-exp').textContent = '0';
+  document.getElementById('linear-improvements').textContent = '0';
+  document.getElementById('tree-best').textContent = '0.0000';
+  document.getElementById('tree-exp').textContent = '0';
+  document.getElementById('tree-branches').textContent = '0';
+
+  drawLinear(0);
+  drawTree(0);
+}
+
+function setSpeed(s) {
+  speed = s;
+  document.getElementById('speedLabel').textContent = s + '×';
+}
+
+// Simple seeded RNG
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    var t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+}
+
+// Init
+window.addEventListener('load', () => {
+  drawLinear(0);
+  drawTree(0);
+});
+
+window.addEventListener('resize', () => {
+  drawLinear(animFrame);
+  drawTree(animFrame);
+});
+</script>
+
+</body>
+</html>

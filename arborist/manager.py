@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from arborist.store import Store
+from arborist.utils import parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -23,17 +23,6 @@ class BranchContext:
     parent_results: dict[str, Any] | None = None
     parent_score: float | None = None
     sibling_scores: list[float] = field(default_factory=list)
-
-
-def _parse_json(value: str | dict | None) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value
-    try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return None
 
 
 class TreeManager:
@@ -141,8 +130,8 @@ class TreeManager:
         if node["parent_id"]:
             parent = self.store.get_node(node["parent_id"])
             if parent:
-                parent_config = _parse_json(parent["config"])
-                parent_results = _parse_json(parent["results"])
+                parent_config = parse_json(parent["config"])
+                parent_results = parse_json(parent["results"])
                 parent_score = parent["score"]
 
         siblings = self.store.get_siblings(node["id"])

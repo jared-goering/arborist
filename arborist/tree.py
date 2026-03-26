@@ -13,81 +13,12 @@ from arborist.evaluators.base import Evaluator
 from arborist.executors.base import Executor
 from arborist.executors.python import PythonExecutor
 from arborist.manager import BranchContext, TreeManager
+from arborist.mutators import RandomMutator
 from arborist.store import Store
 from arborist.strategies import STRATEGIES, Strategy
 from arborist.synthesis import SearchResults, extract_basic_insights
 
 logger = logging.getLogger(__name__)
-
-
-def _default_mutator(
-    config: dict[str, Any],
-    results: dict[str, Any],
-    context: BranchContext,
-) -> list[dict[str, Any]]:
-    """Default mutator using litellm to generate child configs."""
-    try:
-        import litellm
-
-        prompt = (
-            f"You are an experiment optimizer. Given the following experiment and its results, "
-            f"suggest 2-3 new experiment configurations to try.\n\n"
-            f"Goal: {context.goal}\n"
-            f"Current config: {json.dumps(config)}\n"
-            f"Current results: {json.dumps(results)}\n"
-            f"Current depth: {context.depth}\n"
-        )
-        if context.parent_score is not None:
-            prompt += f"Parent score: {context.parent_score}\n"
-        if context.sibling_scores:
-            prompt += f"Sibling scores: {context.sibling_scores}\n"
-        prompt += (
-            f"\nRespond with ONLY a JSON array of config objects. "
-            f"Each config should have the same keys as the current config "
-            f"but with modified values that explore promising directions.\n"
-            f"Example: [{json.dumps(config)}]"
-        )
-
-        response = litellm.completion(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.8,
-        )
-        text = response.choices[0].message.content
-        parsed = json.loads(text)
-        if isinstance(parsed, dict) and "configs" in parsed:
-            parsed = parsed["configs"]
-        if isinstance(parsed, list):
-            return [c for c in parsed if isinstance(c, dict)]
-    except Exception as e:
-        logger.warning("LLM mutator failed, using random perturbation: %s", e)
-
-    # Fallback: random perturbation
-    return _perturb_config(config)
-
-
-def _perturb_config(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Simple random perturbation of config values."""
-    import random
-
-    children = []
-    for _ in range(2):
-        child = dict(config)
-        for key, value in config.items():
-            if isinstance(value, (int, float)):
-                # Perturb by +/- 20%
-                factor = 1 + random.uniform(-0.2, 0.2)
-                new_val = value * factor
-                child[key] = type(value)(new_val) if isinstance(value, int) else new_val
-            elif isinstance(value, list):
-                # Randomly add or remove one element
-                child[key] = list(value)
-                if value and random.random() < 0.3:
-                    idx = random.randint(0, len(value) - 1)
-                    child[key] = [v for i, v in enumerate(value) if i != idx]
-        children.append(child)
-    return children
 
 
 class TreeSearch:
@@ -172,7 +103,7 @@ class TreeSearch:
             self._strategy = strategy
 
         # Mutator
-        self._mutator = mutator or _default_mutator
+        self._mutator = mutator or RandomMutator()
 
         # Wire store into mutator if it supports it (e.g., LLMMutator)
         if hasattr(self._mutator, "set_store"):

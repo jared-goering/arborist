@@ -6,17 +6,7 @@ import json
 from typing import Any
 
 from arborist.store import Store
-
-
-def _parse_json_field(value: str | dict | list | None) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (dict, list)):
-        return value
-    try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return value
+from arborist.utils import parse_json_field
 
 
 class SearchResults:
@@ -31,16 +21,16 @@ class SearchResults:
         """Best scoring node."""
         node = self._store.get_best_node(self.tree_id)
         if node:
-            node["config"] = _parse_json_field(node["config"])
-            node["results"] = _parse_json_field(node["results"])
+            node["config"] = parse_json_field(node["config"])
+            node["results"] = parse_json_field(node["results"])
         return node
 
     def top_k(self, k: int = 5) -> list[dict[str, Any]]:
         """Top k scoring nodes."""
         nodes = self._store.get_top_nodes(self.tree_id, k=k)
         for n in nodes:
-            n["config"] = _parse_json_field(n["config"])
-            n["results"] = _parse_json_field(n["results"])
+            n["config"] = parse_json_field(n["config"])
+            n["results"] = parse_json_field(n["results"])
         return nodes
 
     @property
@@ -96,8 +86,8 @@ def generate_report(tree_id: str, store: Store) -> str:
 
     # Best result
     if best:
-        best_config = _parse_json_field(best["config"])
-        best_results = _parse_json_field(best["results"])
+        best_config = parse_json_field(best["config"])
+        best_results = parse_json_field(best["results"])
         lines.extend([
             f"## Best Result",
             f"",
@@ -128,7 +118,7 @@ def generate_report(tree_id: str, store: Store) -> str:
             f"|------|------|-------|-------|--------|",
         ])
         for i, node in enumerate(top5, 1):
-            cfg = _parse_json_field(node["config"])
+            cfg = parse_json_field(node["config"])
             cfg_str = json.dumps(cfg) if cfg else ""
             if len(cfg_str) > 60:
                 cfg_str = cfg_str[:57] + "..."
@@ -216,7 +206,7 @@ def extract_basic_insights(tree_id: str, store: Store) -> list[dict[str, Any]]:
     # Find the best node
     best_nodes = [n for n in completed if n["score"] == best_score]
     best_node = best_nodes[0]
-    best_config = _parse_json_field(best_node["config"])
+    best_config = parse_json_field(best_node["config"])
 
     insights.append(store.create_insight(
         tree_id=tree_id,
@@ -245,7 +235,7 @@ def extract_basic_insights(tree_id: str, store: Store) -> list[dict[str, Any]]:
     # Check for convergence — top nodes have similar configs
     top_nodes = store.get_top_nodes(tree_id, k=3)
     if len(top_nodes) >= 2:
-        configs = [_parse_json_field(n["config"]) for n in top_nodes]
+        configs = [parse_json_field(n["config"]) for n in top_nodes]
         if configs[0] and configs[1]:
             common_keys = set(configs[0].keys()) & set(configs[1].keys())
             similar = []
