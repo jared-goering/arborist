@@ -31,6 +31,7 @@ class ResearchMove:
     default_budget: int = 30
     default_max_depth: int = 4
     applicable_when: list[str] = field(default_factory=list)
+    executor_type: str = "default"  # "default" or "code_generator"
 
     def generate_config(
         self,
@@ -118,6 +119,7 @@ FEATURE_ENGINEERING = ResearchMove(
         "feature importance reveals gaps",
         "domain knowledge suggests untried features",
     ],
+    executor_type="code_generator",
 )
 
 ARCHITECTURE = ResearchMove(
@@ -136,6 +138,7 @@ ARCHITECTURE = ResearchMove(
         "error patterns suggest structural issues",
         "different model families untried",
     ],
+    executor_type="code_generator",
 )
 
 DATA_CURATION = ResearchMove(

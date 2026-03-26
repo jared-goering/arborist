@@ -1,7 +1,13 @@
 """Arborist — Agentic tree search engine for parallelized experiment orchestration."""
 
 from arborist.evaluators import Evaluator, NumericEvaluator
-from arborist.executors import Executor, PythonExecutor, ShellExecutor
+from arborist.executors import (
+    CodeGeneratorExecutor,
+    Executor,
+    PythonExecutor,
+    ScriptScaffold,
+    ShellExecutor,
+)
 from arborist.manager import BranchContext, TreeManager
 from arborist.store import Store
 from arborist.strategies import (
@@ -11,7 +17,7 @@ from arborist.strategies import (
     Strategy,
     UCBStrategy,
 )
-from arborist.mutators import LLMMutator, RandomMutator
+from arborist.mutators import CodeGenMutator, LLMMutator, RandomMutator
 from arborist.synthesis import SearchResults, generate_report
 from arborist.tree import TreeSearch
 
@@ -31,8 +37,11 @@ __all__ = [
     "Executor",
     "PythonExecutor",
     "ShellExecutor",
+    "CodeGeneratorExecutor",
+    "ScriptScaffold",
     "Evaluator",
     "NumericEvaluator",
+    "CodeGenMutator",
     "LLMMutator",
     "RandomMutator",
     "generate_report",

@@ -2,6 +2,7 @@
 
 from arborist.tree import _perturb_config as _perturb
 
+from arborist.mutators.code_gen_mutator import CodeGenMutator
 from arborist.mutators.llm_mutator import LLMMutator
 
 
@@ -18,4 +19,4 @@ class RandomMutator:
         return children[: self.n_children]
 
 
-__all__ = ["LLMMutator", "RandomMutator"]
+__all__ = ["CodeGenMutator", "LLMMutator", "RandomMutator"]

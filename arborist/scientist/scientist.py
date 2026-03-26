@@ -101,6 +101,8 @@ class Scientist:
         human_in_the_loop: bool = False,
         on_round_complete: Callable[[RoundResult], None] | None = None,
         verbose: bool = True,
+        base_script: str | None = None,
+        code_gen_output_dir: str = "./experiments/generated",
     ) -> None:
         self.problem = problem
         self.executor = executor
@@ -115,6 +117,8 @@ class Scientist:
         self.human_in_the_loop = human_in_the_loop
         self.on_round_complete = on_round_complete
         self.verbose = verbose
+        self.base_script = base_script
+        self.code_gen_output_dir = code_gen_output_dir
 
         # Session tracking
         self.session_id = uuid.uuid4().hex[:12]
@@ -262,9 +266,15 @@ class Scientist:
         )
 
         # 4. EXECUTE via TreeSearch
+        # Use CodeGeneratorExecutor for code-generation moves
+        use_code_gen = (
+            move.executor_type == "code_generator" and self.base_script is not None
+        )
+
         tree_id, experiments_used = self._execute_search(
             hypothesis=hypothesis,
             search_config=search_config,
+            use_code_generator=use_code_gen,
         )
         self._budget_used += experiments_used
 
@@ -348,17 +358,19 @@ class Scientist:
         self,
         hypothesis: Hypothesis,
         search_config: dict[str, Any],
+        use_code_generator: bool = False,
     ) -> tuple[str | None, int]:
         """Phase 4: Run a TreeSearch for the given hypothesis.
+
+        Args:
+            hypothesis: The hypothesis being tested.
+            search_config: Config from move.generate_config().
+            use_code_generator: If True, use CodeGeneratorExecutor and
+                code-gen seed configs instead of numeric param tuning.
 
         Returns (tree_id, experiments_used).
         """
         from arborist.tree import TreeSearch
-
-        # Determine seed configs
-        seed_configs = [self.baseline_config] if self.baseline_config else [{}]
-        if self._best_config and self._best_config != self.baseline_config:
-            seed_configs.append(self._best_config)
 
         # Configure mutator based on move type
         mutator_type = search_config.pop("mutator", "llm")
@@ -373,10 +385,31 @@ class Scientist:
         for k in extra_keys:
             search_config.pop(k, None)
 
+        # Determine executor and seed configs
+        if use_code_generator:
+            from arborist.executors.code_generator import CodeGeneratorExecutor
+
+            executor = CodeGeneratorExecutor(
+                model=self.model,
+                output_dir=self.code_gen_output_dir,
+            )
+            # Seed config for code gen: base_script + hypothesis description
+            seed_configs = [{
+                "base_script": self.base_script,
+                "modifications": hypothesis.description,
+            }]
+            # Use code-gen-aware mutator
+            mutator = self._get_code_gen_mutator()
+        else:
+            executor = self.executor
+            seed_configs = [self.baseline_config] if self.baseline_config else [{}]
+            if self._best_config and self._best_config != self.baseline_config:
+                seed_configs.append(self._best_config)
+
         try:
             search = TreeSearch(
                 goal=f"[{hypothesis.id}] {hypothesis.description}",
-                executor=self.executor,
+                executor=executor,
                 score=self.score,
                 seed_configs=seed_configs,
                 strategy=strategy,
@@ -411,6 +444,19 @@ class Scientist:
         except Exception as e:
             logger.error("TreeSearch failed for hypothesis %s: %s", hypothesis.id, e)
             return None, 0
+
+    def _get_code_gen_mutator(self) -> Any:
+        """Return a mutator that generates modification instructions for code gen.
+
+        Instead of mutating numeric params, this mutator asks the LLM to propose
+        new modification instructions. The parent node's generated_script becomes
+        the new base for children, and mutations are additive.
+        """
+        from arborist.mutators import CodeGenMutator
+        return CodeGenMutator(
+            model=self.mutator_model,
+            base_script=self.base_script,
+        )
 
     def _get_mutator(self, mutator_type: str) -> Any:
         """Get the appropriate mutator for the experiment type."""
