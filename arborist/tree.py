@@ -377,6 +377,8 @@ class TreeSearch:
         start_time = time.monotonic()
 
         try:
+            # Inject node_id so executors can write unique filenames
+            config["node_id"] = node_id
             results = self._executor.run(config, context)
             duration_ms = int((time.monotonic() - start_time) * 1000)
 

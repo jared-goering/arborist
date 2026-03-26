@@ -1,0 +1,50 @@
+{
+  "session_id": "8fbcc98fb212",
+  "dataset": "spaceship_titanic",
+  "baseline_f1": 0.7914,
+  "best_f1": null,
+  "best_config": null,
+  "total_experiments": 3,
+  "duration_seconds": 1.3861064161174,
+  "rounds": [
+    {
+      "round": 1,
+      "hypothesis": "Tune hyperparameters with broader search range",
+      "outcome": "INCONCLUSIVE",
+      "score_before": null,
+      "score_after": null,
+      "improvement": null,
+      "experiments_used": 1,
+      "findings": [
+        "1/1 experiments failed",
+        "Established baseline"
+      ]
+    },
+    {
+      "round": 2,
+      "hypothesis": "Tune hyperparameters with broader search range",
+      "outcome": "INCONCLUSIVE",
+      "score_before": null,
+      "score_after": null,
+      "improvement": null,
+      "experiments_used": 1,
+      "findings": [
+        "1/1 experiments failed",
+        "Established baseline"
+      ]
+    },
+    {
+      "round": 3,
+      "hypothesis": "Tune hyperparameters with broader search range",
+      "outcome": "INCONCLUSIVE",
+      "score_before": null,
+      "score_after": null,
+      "improvement": null,
+      "experiments_used": 1,
+      "findings": [
+        "1/1 experiments failed",
+        "Established baseline"
+      ]
+    }
+  ]
+}

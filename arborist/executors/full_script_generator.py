@@ -59,7 +59,10 @@ class FullScriptGenerator(Executor):
         Returns:
             Dict with metrics, generated_script path, and stdout/stderr.
         """
-        problem_spec: ProblemSpec = config["problem_spec"]
+        raw_spec = config["problem_spec"]
+        problem_spec: ProblemSpec = (
+            ProblemSpec.from_dict(raw_spec) if isinstance(raw_spec, dict) else raw_spec
+        )
         hypothesis: str = config.get("hypothesis", "")
         template_name: str = config.get("template_name", problem_spec.task_type)
         node_id: str = config.get("node_id", "unknown")

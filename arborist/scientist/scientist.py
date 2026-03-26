@@ -275,13 +275,15 @@ class Scientist:
         # 4. EXECUTE via TreeSearch
         # Use CodeGeneratorExecutor for code-generation moves with a base script,
         # or FullScriptGenerator when we have a problem_spec but no base script.
-        use_code_gen = (
-            move.executor_type == "code_generator" and self.base_script is not None
-        )
+        # When problem_spec is set and there's no base_script, ALL moves route
+        # through FullScriptGenerator since there's no existing script to modify.
         use_full_gen = (
-            move.executor_type == "code_generator"
-            and self.base_script is None
-            and self.problem_spec is not None
+            self.problem_spec is not None and self.base_script is None
+        )
+        use_code_gen = (
+            not use_full_gen
+            and move.executor_type == "code_generator"
+            and self.base_script is not None
         )
 
         tree_id, experiments_used = self._execute_search(
@@ -426,7 +428,7 @@ class Scientist:
                 python_cmd=self.problem_spec.python_cmd,
             )
             seed_configs = [{
-                "problem_spec": self.problem_spec,
+                "problem_spec": self.problem_spec.to_dict(),
                 "hypothesis": hypothesis.description,
             }]
             # Use code-gen-aware mutator for children
@@ -477,6 +479,7 @@ class Scientist:
                 if self._best_score is None or score > self._best_score:
                     self._best_score = score
                     self._best_config = best.get("config")
+                    self._persist_best_script(best, score, hypothesis)
 
             # Count only successful experiments (score > 0) toward budget.
             # Failed experiments (crashes, score=0.0) are wasted compute,
@@ -533,6 +536,50 @@ class Scientist:
             base_script=None,  # No base script for full gen
             problem_spec=self.problem_spec,
         )
+
+    def _persist_best_script(
+        self,
+        best: dict[str, Any],
+        score: float,
+        hypothesis: "Hypothesis",
+    ) -> None:
+        """Copy the best-scoring generated script to a durable location.
+
+        Saves to ``<code_gen_output_dir>/best/`` with score and hypothesis
+        metadata so winning strategies are never lost to overwrites.
+        """
+        from pathlib import Path
+        import json as _json
+        import shutil
+
+        results = best.get("results", {})
+        script_path = results.get("generated_script") or results.get("script_path")
+        if not script_path:
+            return
+
+        src = Path(script_path)
+        if not src.exists():
+            logger.warning("Best script not found at %s, cannot persist", src)
+            return
+
+        best_dir = Path(self.code_gen_output_dir).resolve() / "best"
+        best_dir.mkdir(parents=True, exist_ok=True)
+
+        # Filename: score_nodeid.py (e.g., 0.8139_a3f2b1c9.py)
+        node_id_short = best.get("id", "unknown")[:8]
+        dest = best_dir / f"{score:.4f}_{node_id_short}.py"
+        shutil.copy2(src, dest)
+
+        # Write metadata sidecar
+        meta = {
+            "score": score,
+            "node_id": best.get("id"),
+            "hypothesis": hypothesis.description if hypothesis else None,
+            "source_script": str(src),
+        }
+        meta_path = dest.with_suffix(".json")
+        meta_path.write_text(_json.dumps(meta, indent=2))
+        logger.info("Persisted best script (score=%.4f) to %s", score, dest)
 
     def _get_mutator(self, mutator_type: str) -> Any:
         """Get the appropriate mutator for the experiment type."""

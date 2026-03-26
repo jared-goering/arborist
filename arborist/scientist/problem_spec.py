@@ -30,6 +30,29 @@ class ProblemSpec:
     timeout: float = 300
     extra_context: str = ""
 
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-compatible dict."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "dataset_path": self.dataset_path,
+            "target_variable": self.target_variable,
+            "metric": self.metric,
+            "task_type": self.task_type,
+            "constraints": self.constraints,
+            "data_description": self.data_description,
+            "forbidden_patterns": self.forbidden_patterns,
+            "output_format": self.output_format,
+            "python_cmd": self.python_cmd,
+            "timeout": self.timeout,
+            "extra_context": self.extra_context,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ProblemSpec:
+        """Deserialize from a dict."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
     def to_prompt(self) -> str:
         """Render this spec as a prompt string for an LLM."""
         lines = [
