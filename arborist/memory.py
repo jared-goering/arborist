@@ -41,7 +41,7 @@ class MemoryClient:
         if not self.available:
             return False
         try:
-            payload = json.dumps({"content": content, "metadata": metadata or {}}).encode()
+            payload = json.dumps({"text": content, "source": "arborist", "metadata": metadata or {}}).encode()
             req = urllib.request.Request(
                 f"{self.base_url}/api/ingest",
                 data=payload,
