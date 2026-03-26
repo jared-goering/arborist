@@ -64,6 +64,7 @@ class CodeGeneratorExecutor(Executor):
         python_cmd: str = "python3",
         metric_names: list[str] | None = None,
         extra_context: str = "",
+        cwd: str | None = None,
     ) -> None:
         self.model = model
         self.output_dir = output_dir
@@ -71,6 +72,7 @@ class CodeGeneratorExecutor(Executor):
         self.python_cmd = python_cmd
         self.metric_names = metric_names or ["val_f1", "val_accuracy", "val_kappa"]
         self.extra_context = extra_context
+        self.cwd = cwd  # Working directory for script execution; defaults to base_script's dir
 
     def run(self, config: dict[str, Any], context: BranchContext) -> dict[str, Any]:
         """Generate modified script, validate, execute, and return metrics.
@@ -89,6 +91,12 @@ class CodeGeneratorExecutor(Executor):
         # Read base script
         base_script = Path(base_script_path).read_text()
         scaffold = ScriptScaffold.from_script(base_script)
+
+        # Set CWD to base script's directory if not explicitly configured
+        if self.cwd is None:
+            self._run_cwd = str(Path(base_script_path).parent.resolve())
+        else:
+            self._run_cwd = self.cwd
 
         # Generate modified script via LLM
         modified_script = self._generate_code(
@@ -109,6 +117,17 @@ class CodeGeneratorExecutor(Executor):
                 "generated_script": "",
                 "diff": "",
             }
+
+        # Inject PROJECT_ROOT override so generated scripts find data
+        # regardless of where they're saved. Replace the first occurrence of
+        # PROJECT_ROOT = Path(__file__).parent with the actual base script dir.
+        base_dir = str(Path(base_script_path).parent.resolve())
+        modified_script = re.sub(
+            r'PROJECT_ROOT\s*=\s*Path\(__file__\)\.parent',
+            f'PROJECT_ROOT = Path({base_dir!r})',
+            modified_script,
+            count=1,  # Only replace the first occurrence
+        )
 
         # Write to versioned output
         script_path = self._write_script(modified_script, node_id)
@@ -166,14 +185,18 @@ class CodeGeneratorExecutor(Executor):
             "You are an expert ML engineer. You modify Python training scripts "
             "to implement feature engineering and architecture changes.\n\n"
             "RULES:\n"
-            "1. Only modify sections marked MODIFIABLE. FROZEN sections must be "
-            "returned EXACTLY as given.\n"
-            "2. The script must remain syntactically valid Python.\n"
-            "3. All imports needed by your changes must be added at the top of "
-            "the modifiable section (or in the preamble if it's modifiable).\n"
-            "4. Do NOT change the evaluation metrics output format.\n"
-            "5. Preserve subject-grouped cross-validation — never leak across subjects.\n"
-            "6. Return the COMPLETE modified script, not just the changed parts.\n"
+            "1. You will be shown a script with FROZEN and MODIFIABLE sections.\n"
+            "2. Return ONLY the MODIFIABLE section content you want to change.\n"
+            "3. For each section you modify, wrap it in a labeled code fence:\n"
+            "   ```python section:Feature Computation\n"
+            "   ...your modified code...\n"
+            "   ```\n"
+            "4. The script must remain syntactically valid Python.\n"
+            "5. All imports needed by your changes must be added at the top of "
+            "the modifiable section.\n"
+            "6. Do NOT change the evaluation metrics output format.\n"
+            "7. Preserve subject-grouped cross-validation — never leak across subjects.\n"
+            "8. Do NOT return FROZEN sections — they are automatically preserved.\n"
         )
 
     def _build_prompt(
@@ -201,21 +224,48 @@ class CodeGeneratorExecutor(Executor):
         parts.append(scaffold.build_prompt_context())
         parts.append("\n```\n")
 
+        modifiable_names = [s.name for s in scaffold.get_modifiable_sections()]
         parts.append(
             "\n# Instructions\n"
-            "Return the COMPLETE modified script wrapped in a single ```python code fence.\n"
-            "Include ALL section markers (# --- SECTION: ... --- and # --- END SECTION ---).\n"
-            "Only change MODIFIABLE sections. FROZEN sections must be identical.\n"
+            f"Modifiable sections: {', '.join(modifiable_names)}\n\n"
+            "Return ONLY the modified section contents, each in a labeled code fence:\n"
+            "```python section:SectionName\n"
+            "...code...\n"
+            "```\n\n"
+            "If a modifiable section doesn't need changes, omit it (the original is kept).\n"
+            "Do NOT include FROZEN sections or section markers in your output.\n"
         )
 
         return "".join(parts)
 
     def _parse_llm_response(self, text: str, scaffold: ScriptScaffold) -> str:
-        """Extract the Python script from LLM response."""
-        # Try to extract from code fence
+        """Extract modified sections from LLM response and reassemble full script."""
+        modified_sections: dict[str, str] = {}
+
+        # Try labeled fences: ```python section:SectionName
+        labeled_pattern = re.compile(
+            r"```python\s+section:([^\n]+)\s*\n(.*?)```", re.DOTALL
+        )
+        for match in labeled_pattern.finditer(text):
+            section_name = match.group(1).strip()
+            section_code = match.group(2).rstrip()
+            modified_sections[section_name] = section_code
+
+        # If we got labeled sections, reassemble
+        if modified_sections:
+            return scaffold.reassemble(modified_sections)
+
+        # Fallback: try a single code fence (old behavior for backward compat)
         fence_match = re.search(r"```python\s*\n(.*?)```", text, re.DOTALL)
         if fence_match:
-            return fence_match.group(1).strip()
+            code = fence_match.group(1).strip()
+            # Check if it's a full script (has section markers)
+            if "# --- SECTION:" in code:
+                return code
+            # Otherwise assume it's a single modifiable section replacement
+            modifiable = scaffold.get_modifiable_sections()
+            if len(modifiable) == 1:
+                return scaffold.reassemble({modifiable[0].name: code})
 
         # Try generic code fence
         fence_match = re.search(r"```\s*\n(.*?)```", text, re.DOTALL)
@@ -247,12 +297,13 @@ class CodeGeneratorExecutor(Executor):
 
     def _write_script(self, script: str, node_id: str) -> str:
         """Write generated script to versioned output directory."""
-        os.makedirs(self.output_dir, exist_ok=True)
+        out_dir = Path(self.output_dir).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
         filename = f"node_{node_id}.py"
-        path = os.path.join(self.output_dir, filename)
-        Path(path).write_text(script)
+        path = out_dir / filename
+        path.write_text(script)
         logger.info("Wrote generated script to %s", path)
-        return path
+        return str(path)
 
     def _compute_diff(
         self, old: str, new: str, old_path: str, new_path: str
@@ -268,12 +319,14 @@ class CodeGeneratorExecutor(Executor):
 
     def _execute(self, script_path: str) -> subprocess.CompletedProcess:
         """Run the generated script as a subprocess."""
+        run_cwd = getattr(self, "_run_cwd", None)
         try:
             result = subprocess.run(
                 [self.python_cmd, script_path],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
+                cwd=run_cwd,
             )
         except subprocess.TimeoutExpired:
             raise TimeoutError(

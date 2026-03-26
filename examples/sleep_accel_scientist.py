@@ -260,6 +260,7 @@ def main():
         human_in_the_loop=args.human_in_the_loop,
         on_round_complete=on_round_complete,
         verbose=args.verbose,
+        base_script=str(TRAIN_SCRIPT),
     )
 
     print(f"Session ID: {scientist.session_id}")

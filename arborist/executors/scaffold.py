@@ -39,6 +39,7 @@ class ScriptScaffold:
 
     sections: list[ScriptSection] = field(default_factory=list)
     preamble: str = ""  # Code before the first section marker
+    postamble: str = ""  # Code after the last section marker
 
     # Regex for section markers
     _SECTION_START = re.compile(
@@ -48,13 +49,18 @@ class ScriptScaffold:
 
     @classmethod
     def from_script(cls, script: str) -> ScriptScaffold:
-        """Parse a script with section markers into a ScriptScaffold."""
+        """Parse a script with section markers into a ScriptScaffold.
+
+        Code between sections (gaps) is preserved as implicit FROZEN sections
+        named '_gap_N' to ensure reassembly is lossless.
+        """
         scaffold = cls()
         lines = script.split("\n")
 
         current_section: ScriptSection | None = None
         current_lines: list[str] = []
-        preamble_lines: list[str] = []
+        gap_lines: list[str] = []
+        gap_count = 0
         seen_any_section = False
 
         for i, line in enumerate(lines, 1):
@@ -68,9 +74,22 @@ class ScriptScaffold:
                     current_section.end_line = i - 1
                     scaffold.sections.append(current_section)
                     current_lines = []
-                elif not seen_any_section and preamble_lines:
-                    scaffold.preamble = "\n".join(preamble_lines)
-                    preamble_lines = []
+
+                # Save gap content (code between sections)
+                if seen_any_section and gap_lines:
+                    scaffold.sections.append(ScriptSection(
+                        name=f"_gap_{gap_count}",
+                        section_type=SectionType.FROZEN,
+                        content="\n".join(gap_lines),
+                        start_line=i - len(gap_lines),
+                        end_line=i - 1,
+                    ))
+                    gap_count += 1
+                    gap_lines = []
+                elif not seen_any_section and gap_lines:
+                    scaffold.preamble = "\n".join(gap_lines)
+                    gap_lines = []
+
                 seen_any_section = True
 
                 name = start_match.group(1).strip()
@@ -90,25 +109,34 @@ class ScriptScaffold:
             elif current_section:
                 current_lines.append(line)
             else:
-                preamble_lines.append(line)
+                gap_lines.append(line)
 
-        # Handle unclosed section or trailing preamble
+        # Handle unclosed section or trailing content
         if current_section:
             current_section.content = "\n".join(current_lines)
             current_section.end_line = len(lines)
             scaffold.sections.append(current_section)
-        elif preamble_lines and not scaffold.preamble:
-            scaffold.preamble = "\n".join(preamble_lines)
+        if gap_lines:
+            if seen_any_section:
+                scaffold.postamble = "\n".join(gap_lines)
+            elif not scaffold.preamble:
+                scaffold.preamble = "\n".join(gap_lines)
 
         return scaffold
 
     def get_modifiable_sections(self) -> list[ScriptSection]:
         """Return only sections the LLM is allowed to change."""
-        return [s for s in self.sections if s.section_type == SectionType.MODIFIABLE]
+        return [s for s in self.sections
+                if s.section_type == SectionType.MODIFIABLE and not s.name.startswith("_gap_")]
 
     def get_frozen_sections(self) -> list[ScriptSection]:
-        """Return sections the LLM must not change."""
-        return [s for s in self.sections if s.section_type == SectionType.FROZEN]
+        """Return explicitly labeled frozen sections (excludes internal gaps)."""
+        return [s for s in self.sections
+                if s.section_type == SectionType.FROZEN and not s.name.startswith("_gap_")]
+
+    def get_explicit_sections(self) -> list[ScriptSection]:
+        """Return all explicitly labeled sections (excludes internal gaps)."""
+        return [s for s in self.sections if not s.name.startswith("_gap_")]
 
     def build_prompt_context(self) -> str:
         """Build a representation of the script for the LLM prompt.
@@ -123,6 +151,8 @@ class ScriptScaffold:
             )
 
         for section in self.sections:
+            if section.name.startswith("_gap_"):
+                continue  # Don't show internal gaps to LLM
             label = section.section_type.value
             if section.section_type == SectionType.FROZEN:
                 parts.append(
@@ -153,6 +183,11 @@ class ScriptScaffold:
             parts.append(self.preamble)
 
         for section in self.sections:
+            # Gap sections (implicit, between explicit sections) have no markers
+            if section.name.startswith("_gap_"):
+                parts.append(section.content)
+                continue
+
             marker_start = f"# --- SECTION: {section.name} [{section.section_type.value}] ---"
             marker_end = "# --- END SECTION ---"
             parts.append(marker_start)
@@ -166,6 +201,9 @@ class ScriptScaffold:
                 parts.append(section.content)
 
             parts.append(marker_end)
+
+        if self.postamble.strip():
+            parts.append(self.postamble)
 
         return "\n".join(parts)
 

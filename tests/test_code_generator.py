@@ -118,11 +118,12 @@ def _make_context(**kwargs) -> BranchContext:
 class TestScriptScaffold:
     def test_parse_sections(self):
         scaffold = ScriptScaffold.from_script(SAMPLE_SCRIPT)
-        assert len(scaffold.sections) == 4
-        assert scaffold.sections[0].name == "data_loading"
-        assert scaffold.sections[0].section_type == SectionType.FROZEN
-        assert scaffold.sections[1].name == "feature_engineering"
-        assert scaffold.sections[1].section_type == SectionType.MODIFIABLE
+        assert len(scaffold.get_explicit_sections()) == 4
+        explicit = scaffold.get_explicit_sections()
+        assert explicit[0].name == "data_loading"
+        assert explicit[0].section_type == SectionType.FROZEN
+        assert explicit[1].name == "feature_engineering"
+        assert explicit[1].section_type == SectionType.MODIFIABLE
 
     def test_preamble(self):
         scaffold = ScriptScaffold.from_script(SAMPLE_SCRIPT)
