@@ -213,6 +213,8 @@ def main():
     parser.add_argument("--budget", type=int, default=200)
     parser.add_argument("--model", type=str, default="openrouter/anthropic/claude-sonnet-4-5")
     parser.add_argument("--mutator-model", type=str, default="openrouter/anthropic/claude-haiku-4-5")
+    parser.add_argument("--codegen-model", type=str, default=None,
+                        help="Model for code generation (defaults to --model)")
     parser.add_argument("--human-in-the-loop", action="store_true")
     parser.add_argument("--db-path", type=str, default="./sleep_scientist.db")
     parser.add_argument("--journal-dir", type=str, default="./sleep_journals")
@@ -272,6 +274,7 @@ def main():
         total_budget=args.budget,
         model=args.model,
         mutator_model=args.mutator_model,
+        codegen_model=args.codegen_model,
         db_path=args.db_path,
         journal_dir=args.journal_dir,
         memory_url="http://localhost:8642",

@@ -9,6 +9,7 @@ from arborist.scientist.moves import (
     get_move,
 )
 from arborist.scientist.observer import Observation, Observer
+from arborist.scientist.problem_spec import ProblemSpec
 from arborist.scientist.scientist import RoundResult, Scientist, SessionResult
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "Hypothesis",
     "Journal",
     "JournalEntry",
+    "ProblemSpec",
     "ResearchMove",
     "MoveCategory",
     "MOVE_LIBRARY",

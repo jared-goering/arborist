@@ -13,6 +13,7 @@ from arborist.scientist.hypothesis import Hypothesis, HypothesisGenerator
 from arborist.scientist.journal import Journal
 from arborist.scientist.moves import MoveCategory, get_move
 from arborist.scientist.observer import Observation, Observer
+from arborist.scientist.problem_spec import ProblemSpec
 from arborist.store import Store
 from arborist.synthesis import SearchResults
 
@@ -104,6 +105,8 @@ class Scientist:
         verbose: bool = True,
         base_script: str | None = None,
         code_gen_output_dir: str = "./experiments/generated",
+        codegen_model: str | None = None,
+        problem_spec: ProblemSpec | None = None,
     ) -> None:
         self.problem = problem
         self.executor = executor
@@ -114,6 +117,8 @@ class Scientist:
         self.total_budget = total_budget
         self.model = model
         self.mutator_model = mutator_model
+        self.codegen_model = codegen_model
+        self.problem_spec = problem_spec
         self.db_path = db_path
         self.human_in_the_loop = human_in_the_loop
         self.on_round_complete = on_round_complete
@@ -268,15 +273,22 @@ class Scientist:
         )
 
         # 4. EXECUTE via TreeSearch
-        # Use CodeGeneratorExecutor for code-generation moves
+        # Use CodeGeneratorExecutor for code-generation moves with a base script,
+        # or FullScriptGenerator when we have a problem_spec but no base script.
         use_code_gen = (
             move.executor_type == "code_generator" and self.base_script is not None
+        )
+        use_full_gen = (
+            move.executor_type == "code_generator"
+            and self.base_script is None
+            and self.problem_spec is not None
         )
 
         tree_id, experiments_used = self._execute_search(
             hypothesis=hypothesis,
             search_config=search_config,
             use_code_generator=use_code_gen,
+            use_full_generator=use_full_gen,
         )
         self._budget_used += experiments_used
 
@@ -373,6 +385,7 @@ class Scientist:
         hypothesis: Hypothesis,
         search_config: dict[str, Any],
         use_code_generator: bool = False,
+        use_full_generator: bool = False,
     ) -> tuple[str | None, int]:
         """Phase 4: Run a TreeSearch for the given hypothesis.
 
@@ -381,6 +394,8 @@ class Scientist:
             search_config: Config from move.generate_config().
             use_code_generator: If True, use CodeGeneratorExecutor and
                 code-gen seed configs instead of numeric param tuning.
+            use_full_generator: If True, use FullScriptGenerator with
+                problem_spec to generate complete scripts from scratch.
 
         Returns (tree_id, experiments_used).
         """
@@ -400,11 +415,28 @@ class Scientist:
             search_config.pop(k, None)
 
         # Determine executor and seed configs
-        if use_code_generator:
+        if use_full_generator:
+            from arborist.executors.full_script_generator import FullScriptGenerator
+
+            codegen_model = self.codegen_model or self.model
+            executor = FullScriptGenerator(
+                model=codegen_model,
+                output_dir=self.code_gen_output_dir,
+                timeout=self.problem_spec.timeout,
+                python_cmd=self.problem_spec.python_cmd,
+            )
+            seed_configs = [{
+                "problem_spec": self.problem_spec,
+                "hypothesis": hypothesis.description,
+            }]
+            # Use code-gen-aware mutator for children
+            mutator = self._get_full_gen_mutator()
+        elif use_code_generator:
             from arborist.executors.code_generator import CodeGeneratorExecutor
 
+            codegen_model = self.codegen_model or self.model
             executor = CodeGeneratorExecutor(
-                model=self.model,
+                model=codegen_model,
                 output_dir=self.code_gen_output_dir,
             )
             # Seed config for code gen: base_script + hypothesis description
@@ -487,6 +519,19 @@ class Scientist:
         return CodeGenMutator(
             model=self.mutator_model,
             base_script=self.base_script,
+        )
+
+    def _get_full_gen_mutator(self) -> Any:
+        """Return a mutator for FullScriptGenerator that proposes new hypotheses.
+
+        Similar to _get_code_gen_mutator but generates configs with problem_spec
+        instead of base_script. Children get new hypothesis descriptions.
+        """
+        from arborist.mutators import CodeGenMutator
+        return CodeGenMutator(
+            model=self.mutator_model,
+            base_script=None,  # No base script for full gen
+            problem_spec=self.problem_spec,
         )
 
     def _get_mutator(self, mutator_type: str) -> Any:

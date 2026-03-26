@@ -25,10 +25,12 @@ class CodeGenMutator:
         model: str = "openrouter/anthropic/claude-haiku-4-5",
         max_children: int = 2,
         base_script: str | None = None,
+        problem_spec: Any | None = None,
     ) -> None:
         self.model = model
         self.max_children = max_children
         self.base_script = base_script
+        self.problem_spec = problem_spec
 
     def __call__(
         self,
@@ -77,10 +79,18 @@ class CodeGenMutator:
         # Build child configs
         children = []
         for proposal in proposals[: self.max_children]:
-            child = {
-                "base_script": parent_script if parent_script else self.base_script,
-                "modifications": proposal,
-            }
+            if self.problem_spec is not None and "problem_spec" in config:
+                # FullScriptGenerator mode: children get problem_spec + new hypothesis
+                child = {
+                    "problem_spec": config["problem_spec"],
+                    "hypothesis": proposal,
+                }
+            else:
+                # CodeGeneratorExecutor mode: children get base_script + modifications
+                child = {
+                    "base_script": parent_script if parent_script else self.base_script,
+                    "modifications": proposal,
+                }
             children.append(child)
 
         return children if children else self._fallback(config)
@@ -148,6 +158,17 @@ class CodeGenMutator:
 
     def _fallback(self, config: dict[str, Any]) -> list[dict[str, Any]]:
         """Simple fallback: keep same base with generic exploratory instructions."""
+        if self.problem_spec is not None and "problem_spec" in config:
+            # FullScriptGenerator mode
+            return [
+                {
+                    "problem_spec": config["problem_spec"],
+                    "hypothesis": (
+                        config.get("hypothesis", "")
+                        + " Additionally, add interaction features between existing features."
+                    ),
+                },
+            ]
         base = config.get("generated_script") or config.get("base_script", "")
         return [
             {
