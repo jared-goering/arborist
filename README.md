@@ -1,4 +1,4 @@
-<![CDATA[# 🌳 Arborist
+# 🌳 Arborist
 
 [![Tests](https://github.com/jared-goering/arborist/actions/workflows/test.yml/badge.svg)](https://github.com/jared-goering/arborist/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/arborist-ai)](https://pypi.org/project/arborist-ai/)
@@ -257,4 +257,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 ## License
 
 MIT
-]]>
