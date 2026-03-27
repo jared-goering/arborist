@@ -5,7 +5,7 @@ Agentic tree search engine for parallelized experiment orchestration. Define a g
 **Local-first. LLM-agnostic. Resumable. Composable.**
 
 ```
-pip install arborist
+pip install arborist-ai
 ```
 
 ## Quickstart
@@ -54,12 +54,12 @@ Everything persists to SQLite. Kill and restart anytime.
 
 ```python
 search = TreeSearch(
-    goal="Maximize F1 for sleep staging",
+    goal="Maximize F1 for multi-class classification",
     executor=my_fn,                     # callable(config) -> dict
     score=lambda r: r["f1"],            # callable(results) -> float
     seed_configs=[                      # Initial experiments
-        {"lr": 0.01, "features": ["accel"]},
-        {"lr": 0.001, "features": ["accel", "hr"]},
+        {"lr": 0.01, "features": ["feat_1", "feat_2"]},
+        {"lr": 0.001, "features": ["feat_1", "feat_3"]},
     ],
 
     # Optional
@@ -183,7 +183,7 @@ arborist prune NODE_ID --reason "Manual prune" [--db ./arborist.db]
 ### YAML Config
 
 ```yaml
-goal: "Maximize F1 for sleep staging"
+goal: "Maximize F1 for multi-class classification"
 strategy: ucb
 concurrency: 5
 max_experiments: 200
@@ -201,9 +201,9 @@ evaluator:
 
 seed_configs:
   - lr: 0.01
-    features: [accel_mean, accel_std]
+    features: [feat_1, feat_2, feat_3]
   - lr: 0.001
-    features: [accel_mean, hr_mean]
+    features: [feat_1, feat_4, feat_5]
 
 termination:
   target_score: 0.95
