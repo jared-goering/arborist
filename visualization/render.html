@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Arborist — Tree Search vs Linear</title>
+<title>Arborist — Hybrid vs Linear</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #0a0a0a; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 </style>
@@ -13,411 +13,741 @@
 <canvas id="c" width="1920" height="1080"></canvas>
 <script>
 
-// — Data —————————————————————————————————————————————————————
+// =====================================================================
+//  ARBORIST v3 — Phase-based animation with explore/prune drama
+//  Each explore phase: branches appear simultaneously → evaluate → prune
+// =====================================================================
 
-const IMPROVEMENTS = [
-  [1, 0.2312], [3, 0.2445], [4, 0.3185], [6, 0.3267], [7, 0.3274],
-  [8, 0.3540], [13, 0.3595], [41, 0.3612], [66, 0.3632],
-];
-
-const TREE = [
-  ['006f', null,  0, 0.3319], ['9ab5', '006f', 1, 0.3349], ['a151', '006f', 1, 0.2862],
-  ['f1da', '9ab5', 2, 0.3377], ['d186', '9ab5', 2, 0.3037], ['9fc3', 'a151', 2, 0.3002],
-  ['74e6', 'a151', 2, 0.3409], ['e8a3', 'd186', 3, 0.3277], ['c4d5', 'f1da', 3, 0.3320],
-  ['a1b2', 'f1da', 3, 0.3320], ['9053', '74e6', 3, 0.3385], ['bd9c', '74e6', 3, 0.3321],
-  ['1a2b', '9053', 4, 0.3012], ['5e6f', '9053', 4, 0.3565], ['2de3', '9053', 4, 0.3450],
-  ['c2d3', 'bd9c', 4, 0.3427], ['82c3', 'bd9c', 4, 0.2834], ['f6a7', '5e6f', 5, 0.3230],
-  ['d0e1', '5e6f', 5, 0.3779], ['b4c5', '2de3', 5, 0.3145], ['a8b9', '2de3', 5, 0.3690],
-  ['e2f3', 'c2d3', 5, 0.3520], ['c6d7', 'c2d3', 5, 0.3340],
-];
-
-// — Colors ———————————————————————————————————————————————————
-
-const C = {
-  bg: '#0a0a0a', panel: '#111111', border: '#1f1f1f', grid: '#1a1a1a',
-  label: '#3a3a3a', muted: '#525252', gray: '#a1a1aa',
-  green: '#4ade80', blue: '#60a5fa', red: 'rgba(239,68,68,',
-};
-
-// — Seeded RNG + pre-generate scatter ————————————————————————
+const W = 1920, H = 1080;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
 
 const rand = (() => {
   let s = 42;
-  return () => { s |= 0; s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  return () => { s|=0; s=s+0x6D2B79F5|0; let t=Math.imul(s^s>>>15,1|s); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; };
 })();
 
-const LINEAR_DOTS = (() => {
-  const dots = [], impMap = new Map(IMPROVEMENTS.map(([e, s], i) => [e, { s, i }]));
+// ── LINEAR DATA ─────────────────────────────────────────────────────
+const LIN_IMPS = [
+  [2, 0.8436], [5, 0.8498], [9, 0.8541], [15, 0.8573],
+  [22, 0.8601], [31, 0.8627], [40, 0.8651], [48, 0.8659]
+];
+const LIN_MAX = 50;
+const LIN_DOTS = (() => {
+  const dots = [], impMap = new Map(LIN_IMPS.map(([e,s],i) => [e,{s,i}]));
   let bi = 0;
-  for (let e = 1; e <= 100; e++) {
+  for (let e = 1; e <= LIN_MAX; e++) {
     const imp = impMap.get(e);
-    if (imp) { bi = imp.i; dots.push({ e, s: imp.s, kept: true }); }
-    else { const b = IMPROVEMENTS[bi][1]; dots.push({ e, s: Math.max(0.21, Math.min(0.39, b + (rand() - 0.7) * 0.08)), kept: false }); }
+    if (imp) { bi = imp.i; dots.push({e, s:imp.s, kept:true}); }
+    else { const b = LIN_IMPS[Math.min(bi, LIN_IMPS.length-1)][1]; dots.push({e, s: Math.max(0.828, Math.min(0.870, b + (rand()-0.62)*0.045)), kept:false}); }
   }
   return dots;
 })();
 
-// — Canvas + primitives ——————————————————————————————————————
+// ── HYBRID TREE — explicit positions ────────────────────────────────
+const NODES = {
+  R:   { par:null, ph:'explore', f:0.8509, x:0.02, y:0.40 },
 
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const W = 1920, H = 1080;
+  // Explore 1: fan from root
+  E1a: { par:'R',   ph:'explore', f:0.8553, x:0.13, y:0.28 },
+  E1b: { par:'R',   ph:'explore', f:0.8481, x:0.13, y:0.52 },
+  E1c: { par:'R',   ph:'explore', f:0.8421, x:0.13, y:0.12 },
+  E1d: { par:'R',   ph:'explore', f:0.8392, x:0.13, y:0.66 },
+  // Dead-end extensions
+  D1a: { par:'E1b', ph:'explore', f:0.8465, x:0.21, y:0.58 },
+  D1b: { par:'E1c', ph:'explore', f:0.8401, x:0.21, y:0.08 },
+  D1c: { par:'E1d', ph:'explore', f:0.8377, x:0.21, y:0.72 },
 
-const circle = (x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); };
-const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
-const roundRect = (x, y, w, h, r) => { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); };
+  // Exploit 1: climb from E1a
+  X1a: { par:'E1a', ph:'exploit', f:0.8614, x:0.23, y:0.28 },
+  X1b: { par:'X1a', ph:'exploit', f:0.8651, x:0.31, y:0.28 },
+  X1c: { par:'X1b', ph:'exploit', f:0.8671, x:0.39, y:0.28 },
 
-function text(str, x, y, { font, color, align = 'left' } = {}) {
-  if (font) ctx.font = font;
-  if (color) ctx.fillStyle = color;
-  ctx.textAlign = align;
-  ctx.fillText(str, x, y);
+  // Explore 2: fan from X1c
+  E2a: { par:'X1c', ph:'explore', f:0.8688, x:0.49, y:0.20 },
+  E2b: { par:'X1c', ph:'explore', f:0.8601, x:0.49, y:0.40 },
+  E2c: { par:'X1c', ph:'explore', f:0.8543, x:0.49, y:0.54 },
+  D2a: { par:'E2b', ph:'explore', f:0.8588, x:0.56, y:0.44 },
+  D2b: { par:'E2c', ph:'explore', f:0.8521, x:0.56, y:0.59 },
+
+  // Exploit 2: climb from E2a
+  X2a: { par:'E2a', ph:'exploit', f:0.8704, x:0.57, y:0.20 },
+  X2b: { par:'X2a', ph:'exploit', f:0.8723, x:0.64, y:0.20 },
+  X2c: { par:'X2b', ph:'exploit', f:0.8731, x:0.71, y:0.20 },
+
+  // Explore 3: scout from X2c
+  E3a: { par:'X2c', ph:'explore', f:0.8718, x:0.79, y:0.13 },
+  E3b: { par:'X2c', ph:'explore', f:0.8641, x:0.79, y:0.32 },
+
+  // Exploit 3: final climb
+  X3a: { par:'E3a', ph:'exploit', f:0.8740, x:0.86, y:0.13 },
+  X3b: { par:'X3a', ph:'exploit', f:0.8748, x:0.92, y:0.13 },
+  X3c: { par:'X3b', ph:'exploit', f:0.8750, x:0.97, y:0.13 },
+};
+
+const BEST_PATH = new Set(['R','E1a','X1a','X1b','X1c','E2a','X2a','X2b','X2c','E3a','X3a','X3b','X3c']);
+const PRUNED = new Set(['E1b','E1c','E1d','D1a','D1b','D1c','E2b','E2c','D2a','D2b','E3b']);
+
+// ── PHASE TIMELINE ──────────────────────────────────────────────────
+// Each phase occupies a time range in [0..1] (within hybrid's portion)
+// Explore phases have sub-stages: appear → evaluate → prune → pick winner
+// Exploit phases: nodes appear one by one
+const PHASES = [
+  // Phase 0: Root appears
+  { t0: 0.00, t1: 0.04, type: 'root', nodes: ['R'] },
+
+  // Phase 1: EXPLORE 1 — branches fan out, then prune
+  { t0: 0.04, t1: 0.22, type: 'explore',
+    branches: ['E1a', 'E1b', 'E1c', 'E1d'],       // appear simultaneously
+    extensions: ['D1a', 'D1b', 'D1c'],               // dead-end extensions appear
+    winner: 'E1a',                                     // survives
+    pruned: ['E1b', 'E1c', 'E1d', 'D1a', 'D1b', 'D1c'],
+    // Sub-timing within phase (fractions of phase duration):
+    fanOut: 0.25,       // 0-25%: branches appear
+    extend: 0.42,       // 25-42%: dead ends try extending
+    evaluate: 0.58,     // 42-58%: all glow, evaluating
+    prune: 0.80,        // 58-80%: dead ends fade & get X'd
+    // 80-100%: winner brightens
+  },
+
+  // Phase 2: EXPLOIT 1 — three nodes appear sequentially
+  { t0: 0.22, t1: 0.36, type: 'exploit', nodes: ['X1a', 'X1b', 'X1c'] },
+
+  // Phase 3: EXPLORE 2
+  { t0: 0.36, t1: 0.54, type: 'explore',
+    branches: ['E2a', 'E2b', 'E2c'],
+    extensions: ['D2a', 'D2b'],
+    winner: 'E2a',
+    pruned: ['E2b', 'E2c', 'D2a', 'D2b'],
+    fanOut: 0.25, extend: 0.42, evaluate: 0.58, prune: 0.80,
+  },
+
+  // Phase 4: EXPLOIT 2
+  { t0: 0.54, t1: 0.68, type: 'exploit', nodes: ['X2a', 'X2b', 'X2c'] },
+
+  // Phase 5: EXPLORE 3
+  { t0: 0.68, t1: 0.84, type: 'explore',
+    branches: ['E3a', 'E3b'],
+    extensions: [],
+    winner: 'E3a',
+    pruned: ['E3b'],
+    fanOut: 0.30, extend: 0.30, evaluate: 0.55, prune: 0.80,
+  },
+
+  // Phase 6: EXPLOIT 3 — final climb
+  { t0: 0.84, t1: 1.00, type: 'exploit', nodes: ['X3a', 'X3b', 'X3c'] },
+];
+
+// ── COLORS ──────────────────────────────────────────────────────────
+const C = {
+  bg: '#0a0a0a', panel: '#0f0f0f', border: '#1a1a1a', grid: '#141414',
+  green: '#4ade80', blue: '#60a5fa', orange: '#fb923c', red: '#ef4444',
+  candidate: '#a78bfa',  // purple: "being evaluated" color
+};
+
+// ── PRIMITIVES ──────────────────────────────────────────────────────
+function circle(x,y,r) { ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); }
+function line(x1,y1,x2,y2) { ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
+function roundRect(x,y,w,h,r) { ctx.beginPath(); ctx.roundRect(x,y,w,h,r); }
+function txt(s,x,y,{font,color,align='left'}={}) {
+  if(font) ctx.font=font; if(color) ctx.fillStyle=color; ctx.textAlign=align; ctx.fillText(s,x,y);
 }
 
-// — Easing ———————————————————————————————————————————————————
+const easeOut = t => 1-Math.pow(1-Math.min(t,1),3);
+const easeIn = t => Math.pow(Math.min(t,1), 2);
+const lerp = (a,b,t) => a+(b-a)*Math.min(Math.max(t,0),1);
+const clamp = (v,a,b) => Math.min(Math.max(v,a),b);
 
-const ease = t => t < 1 ? 1 - Math.pow(1 - t, 3) : 1;             // ease-out cubic
-const lerp = (a, b, t) => a + (b - a) * Math.min(Math.max(t, 0), 1);
+// ── LAYOUT ──────────────────────────────────────────────────────────
+const MARGIN = 60, GAP = 32;
+const L_W = 420;
+const H_W = W - MARGIN*2 - GAP - L_W;
+const L_X = MARGIN, H_X = MARGIN + L_W + GAP;
+const PANEL_Y = 130, PANEL_H = 680;
+const PAD = { t: 52, r: 24, b: 44, l: 52 };
 
-// — Chart coordinate system ——————————————————————————————————
+// Timing — LINEAR hybrid progress so each phase gets equal screen time
+const HYBRID_END = 0.48;   // hybrid finishes at ~48% of animation
+const LINEAR_END = 0.85;
+function hybridProg(t) { return clamp(t/HYBRID_END, 0, 1); }  // LINEAR — no easing!
+function linearProg(t) { return easeOut(clamp(t/LINEAR_END, 0, 1)); }
 
-function makeChart(ox, oy, w, h, xRange, yRange) {
-  const [xMin, xMax] = xRange, [yMin, yMax] = yRange;
-  return {
-    ox, oy, w, h,
-    x: v => ox + ((v - xMin) / (xMax - xMin)) * w,
-    y: v => oy + h - ((v - yMin) / (yMax - yMin)) * h,
-    drawGrid(yStep, xLabels, xAxisLabel) {
-      ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
-      for (let s = yMin; s <= yMax + 0.001; s += yStep) line(this.ox, this.y(s), this.ox + this.w, this.y(s));
-      const mono = '12px "JetBrains Mono", monospace';
-      for (let s = yMin; s <= yMax + 0.001; s += yStep) text(s.toFixed(2), this.ox - 10, this.y(s) + 4, { font: mono, color: C.label, align: 'right' });
-      xLabels.forEach(([v, l]) => text(l, this.x(v), oy + h + 20, { font: mono, color: C.label, align: 'center' }));
-      text(xAxisLabel, ox + w / 2, oy + h + 38, { font: '12px Inter, sans-serif', color: C.label, align: 'center' });
-    },
-  };
+function formatTime(secs) {
+  const m=Math.floor(secs/60), s=Math.round(secs%60);
+  return `${m}m ${s<10?'0':''}${s}s`;
 }
 
-// — Layout ———————————————————————————————————————————————————
+// ── COMPUTE NODE STATES ─────────────────────────────────────────────
+// For each node at time hp (hybrid progress 0..1), compute:
+//   state: 'hidden' | 'appearing' | 'candidate' | 'evaluating' | 'pruning' | 'pruned' | 'winner' | 'settled'
+//   alpha: 0..1
+//   glow: 0..1
 
-const PW = 820, PH = 540, PY = 150, GAP = 40;
-const PAD = { t: 55, r: 24, b: 55, l: 60 };
-const LEFT = (W - PW * 2 - GAP) / 2, RIGHT = LEFT + PW + GAP;
-const CW = PW - PAD.l - PAD.r, CH = PH - PAD.t - PAD.b;
+function computeNodeStates(hp) {
+  const states = {};
 
-// — Timing ———————————————————————————————————————————————————
-// t is 0..1 normalized progress
-// Tree finishes at t=0.35, linear finishes at t=0.70, rest is hold
-// This makes tree visibly faster
-
-const TREE_END = 0.40;   // tree done at 40% of animation
-const LINEAR_END = 0.75; // linear done at 75%
-
-function treeProgress(t) { return ease(Math.min(t / TREE_END, 1)); }
-function linearProgress(t) { return ease(Math.min(t / LINEAR_END, 1)); }
-
-// — Frame renderer ———————————————————————————————————————————
-
-function renderFrame(t) {
-  // t: 0..1 normalized
-
-  // Background
-  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
-  const bg = ctx.createRadialGradient(W * 0.3, H * 0.2, 0, W * 0.3, H * 0.2, W * 0.5);
-  bg.addColorStop(0, 'rgba(34,197,94,0.03)'); bg.addColorStop(1, 'transparent');
-  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
-
-  // Title
-  const tg = ctx.createLinearGradient(W / 2 - 150, 0, W / 2 + 150, 0);
-  tg.addColorStop(0, '#22c55e'); tg.addColorStop(0.5, C.green); tg.addColorStop(1, '#86efac');
-  text('arborist', W / 2, 80, { font: '800 72px Inter, sans-serif', color: tg, align: 'center' });
-  text('Tree search for hyperparameter optimization', W / 2, 115, { font: '400 22px Inter, sans-serif', color: '#737373', align: 'center' });
-
-  // Panels
-  for (const px of [LEFT, RIGHT]) {
-    ctx.fillStyle = C.panel; ctx.strokeStyle = C.border; ctx.lineWidth = 1;
-    roundRect(px, PY, PW, PH, 14); ctx.fill(); ctx.stroke();
+  for (const [id, nd] of Object.entries(NODES)) {
+    states[id] = { state: 'hidden', alpha: 0, glow: 0, pulsePhase: 0 };
   }
 
-  // Headers
-  text('LINEAR HILL CLIMBING', LEFT + 28, PY + 35, { font: '600 15px Inter', color: '#a3a3a3' });
-  text('TREE SEARCH', RIGHT + 28, PY + 35, { font: '600 15px Inter', color: '#a3a3a3' });
-  drawBadge(LEFT + PW - 130, PY + 22, 'autoresearch', C.gray, 'rgba(161,161,170,0.1)');
-  drawBadge(RIGHT + PW - 100, PY + 22, 'arborist', C.green, 'rgba(34,197,94,0.1)');
+  for (const phase of PHASES) {
+    const phaseT = clamp((hp - phase.t0) / (phase.t1 - phase.t0), 0, 1);
+    if (phaseT <= 0) continue;
 
-  // VS pill
-  circle(W / 2, PY + PH / 2, 28);
-  ctx.fillStyle = '#1a1a1a'; ctx.fill(); ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1; ctx.stroke();
-  text('VS', W / 2, PY + PH / 2 + 5, { font: '700 14px Inter', color: C.muted, align: 'center' });
+    if (phase.type === 'root') {
+      states['R'] = { state: 'settled', alpha: easeOut(phaseT), glow: 0.3 };
+    }
+    else if (phase.type === 'exploit') {
+      const n = phase.nodes.length;
+      phase.nodes.forEach((id, i) => {
+        const nodeStart = i / n;
+        // Slower alpha ramp so edge has time to draw in before node fully appears
+        const nodeT = clamp((phaseT - nodeStart) * n, 0, 1);
+        const alphaT = easeOut(clamp(nodeT * 1.5 - 0.2, 0, 1)); // delays slightly, then catches up
+        if (nodeT > 0) {
+          states[id] = { state: 'settled', alpha: nodeT, glow: nodeT > 0.5 ? 0.3 : 0, drawProg: easeOut(nodeT) };
+        }
+      });
+    }
+    else if (phase.type === 'explore') {
+      const { branches, extensions, winner, pruned: prunedList, fanOut, extend, evaluate, prune } = phase;
 
-  // Charts
-  const lp = linearProgress(t);
-  const tp = treeProgress(t);
-  const linearStats = drawLinear(lp, t);
-  const treeStats = drawTree(tp, t);
+      // Each sub-phase is SELF-CONTAINED — sets ALL node states it needs
+      // (not dependent on earlier sub-phases having run)
 
-  // Timer badges (simulated wall-clock: linear=45min, tree=2.8min)
-  const linearTime = lp * 45;
-  const treeTime = tp * 2.8;
-  const treeDone = t >= TREE_END;
-  const linearDone = t >= LINEAR_END;
-
-  drawTimer(LEFT + 28, PY + PH - 28, formatTime(linearTime), linearDone);
-  drawTimer(RIGHT + 28, PY + PH - 28, formatTime(treeTime), treeDone);
-
-  // "DONE" flash on tree when it finishes first
-  if (treeDone && !linearDone) {
-    const flash = Math.min((t - TREE_END) / 0.05, 1);  // fade in over 5% of animation
-    ctx.save();
-    ctx.globalAlpha = flash;
-    // Green glow around tree panel
-    ctx.shadowColor = 'rgba(74,222,128,0.15)';
-    ctx.shadowBlur = 30;
-    ctx.strokeStyle = 'rgba(74,222,128,0.3)';
-    ctx.lineWidth = 2;
-    roundRect(RIGHT, PY, PW, PH, 14);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // DONE badge
-    const dx = RIGHT + PW - 80, dy = PY + PH - 30;
-    ctx.fillStyle = 'rgba(34,197,94,0.15)';
-    roundRect(dx, dy, 60, 24, 5); ctx.fill();
-    text('✓ DONE', dx + 8, dy + 16, { font: '600 11px Inter', color: C.green });
-    ctx.restore();
-  }
-
-  // Stats row
-  const sy = PY + PH + 20;
-  drawStatRow(LEFT, sy, [
-    [linearStats.best.toFixed(4), 'BEST F1', C.gray],
-    [String(linearStats.exp), 'EXPERIMENTS', C.gray],
-    [String(linearStats.imps), 'IMPROVEMENTS', C.gray],
-  ]);
-  drawStatRow(RIGHT, sy, [
-    [treeStats.best.toFixed(4), 'BEST F1', C.green],
-    [String(treeStats.nodes), 'EXPERIMENTS', C.green],
-    [String(treeStats.branches), 'BRANCHES', C.blue],
-  ]);
-
-  // Speed comparison callout (appears after tree is done)
-  if (treeDone) {
-    const fade = Math.min((t - TREE_END) / 0.08, 1);
-    ctx.save();
-    ctx.globalAlpha = fade;
-
-    // "16× faster" between the stat rows
-    const mx = W / 2, my = sy + 8;
-    ctx.fillStyle = 'rgba(34,197,94,0.08)';
-    roundRect(mx - 50, my - 16, 100, 28, 8); ctx.fill();
-    text('16× faster', mx, my + 2, { font: '700 14px "JetBrains Mono", monospace', color: C.green, align: 'center' });
-
-    ctx.restore();
-  }
-
-  // Footer
-  const fy = sy + 80;
-  text('Linear search gets trapped in local optima after just 66 experiments.', W / 2, fy, { font: '400 17px Inter', color: '#404040', align: 'center' });
-  text('Tree search branches into multiple directions using UCB, finding better solutions with fewer experiments.', W / 2, fy + 28, { font: '400 17px Inter', color: '#404040', align: 'center' });
-
-  drawLegend(W / 2, fy + 70);
-}
-
-// — Linear chart —————————————————————————————————————————————
-
-function drawLinear(p, t) {
-  const chart = makeChart(LEFT + PAD.l, PY + PAD.t, CW, CH, [0, 100], [0.20, 0.40]);
-  chart.drawGrid(0.05, [[0,'0'],[20,'20'],[40,'40'],[60,'60'],[80,'80'],[100,'100']], 'Experiment #');
-
-  const vis = p * 100;  // continuous 0-100
-
-  // Scatter: discarded (fade in as they appear)
-  for (const d of LINEAR_DOTS) {
-    if (d.e > vis) break;
-    if (d.kept) continue;
-    const age = (vis - d.e) / 5;  // fade over 5 experiments
-    const alpha = Math.min(age, 1) * 0.15;
-    circle(chart.x(d.e), chart.y(d.s), 3.5);
-    ctx.fillStyle = `rgba(161,161,170,${alpha})`; ctx.fill();
-  }
-
-  // Step line (smooth: draw up to fractional experiment)
-  const imps = IMPROVEMENTS.filter(([e]) => e <= vis);
-  if (imps.length) {
-    ctx.beginPath(); ctx.strokeStyle = C.blue; ctx.lineWidth = 2.5;
-    imps.forEach(([e, s], i) => {
-      const nextE = i < imps.length - 1 ? imps[i + 1][0] : vis;
-      i === 0 ? ctx.moveTo(chart.x(e), chart.y(s)) : ctx.lineTo(chart.x(e), chart.y(s));
-      ctx.lineTo(chart.x(nextE), chart.y(s));
-    });
-    ctx.stroke();
-
-    // Kept dots (scale in)
-    for (const [e, s] of imps) {
-      const age = Math.min((vis - e) / 3, 1);
-      const r = lerp(0, 5, ease(age));
-      const gr = lerp(0, 10, ease(age));
-      if (r > 0.5) {
-        circle(chart.x(e), chart.y(s), gr); ctx.fillStyle = `rgba(74,222,128,${0.15 * age})`; ctx.fill();
-        circle(chart.x(e), chart.y(s), r);  ctx.fillStyle = C.green; ctx.fill();
+      if (phaseT < fanOut) {
+        // Branches appear simultaneously
+        const subT = phaseT / fanOut;
+        branches.forEach(id => {
+          states[id] = { state: 'candidate', alpha: easeOut(subT), glow: 0.2 * subT, pulsePhase: 0 };
+        });
+      }
+      else if (phaseT < extend) {
+        // Branches fully visible, extensions growing
+        const subT = (phaseT - fanOut) / (extend - fanOut);
+        branches.forEach(id => {
+          states[id] = { state: 'candidate', alpha: 1, glow: 0.3, pulsePhase: 0 };
+        });
+        extensions.forEach(id => {
+          states[id] = { state: 'candidate', alpha: easeOut(subT), glow: 0.15 * subT, pulsePhase: 0 };
+        });
+      }
+      else if (phaseT < evaluate) {
+        // ALL nodes glow purple — "evaluating"
+        const subT = (phaseT - extend) / (evaluate - extend);
+        const allNodes = [...branches, ...extensions];
+        allNodes.forEach(id => {
+          const pulse = 0.5 + 0.5 * Math.sin(subT * Math.PI * 4 + (NODES[id].y * 10));
+          states[id] = { state: 'evaluating', alpha: 1, glow: 0.4 + 0.3 * pulse, pulsePhase: subT };
+        });
+      }
+      else if (phaseT < prune) {
+        // Winner brightens, dead ends fade with X
+        const subT = (phaseT - evaluate) / (prune - evaluate);
+        states[winner] = { state: 'winner', alpha: 1, glow: 0.5 + 0.3 * easeOut(subT) };
+        prunedList.forEach(id => {
+          const fadeT = easeIn(subT);
+          states[id] = { state: 'pruning', alpha: lerp(1, 0.25, fadeT), glow: lerp(0.3, 0, fadeT), pruneT: fadeT };
+        });
+      }
+      else {
+        // Winner settled, dead ends permanently pruned
+        const subT = (phaseT - prune) / (1 - prune);
+        states[winner] = { state: 'settled', alpha: 1, glow: lerp(0.8, 0.3, easeOut(subT)) };
+        prunedList.forEach(id => {
+          states[id] = { state: 'pruned', alpha: 0.2, glow: 0, pruneT: 1 };
+        });
       }
     }
   }
 
-  // Plateau zone (fade in)
-  if (vis > 70) {
-    const fade = Math.min((vis - 70) / 10, 1);
-    const px = chart.x(66);
-    ctx.save();
-    ctx.globalAlpha = fade;
-    ctx.setLineDash([5, 5]);
-    ctx.strokeStyle = C.red + '0.3)'; ctx.lineWidth = 1;
-    line(px, chart.oy, px, chart.oy + chart.h);
-    ctx.setLineDash([]);
-    ctx.fillStyle = C.red + '0.03)';
-    ctx.fillRect(px, chart.oy, chart.x(vis) - px, chart.h);
-    if (vis > 75) {
-      text('← stuck here', px + 6, chart.oy + 18, { font: '13px Inter', color: C.red + '0.5)' });
-      text(Math.round(vis - 66) + ' wasted experiments', px + 6, chart.oy + 36, { font: '13px Inter', color: C.red + '0.5)' });
-    }
-    ctx.restore();
-  }
-
-  const best = imps.length ? imps[imps.length - 1][1] : 0;
-  return { best, exp: Math.round(vis), imps: imps.length };
+  return states;
 }
 
-// — Tree chart ———————————————————————————————————————————————
+// ── RENDER FRAME ────────────────────────────────────────────────────
+function renderFrame(t) {
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, H);
 
-function drawTree(p, t) {
-  const chart = makeChart(RIGHT + PAD.l, PY + PAD.t, CW, CH, [-0.5, 5.5], [0.20, 0.40]);
-  chart.drawGrid(0.05, [0,1,2,3,4,5].map(d => [d, 'd' + d]), 'Depth (branching)');
+  // Background glow
+  const bg = ctx.createRadialGradient(H_X + H_W*0.7, PANEL_Y + PANEL_H*0.25, 0, H_X + H_W*0.6, PANEL_Y + PANEL_H*0.3, 600);
+  bg.addColorStop(0, 'rgba(34,197,94,0.015)');
+  bg.addColorStop(1, 'transparent');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
-  // Continuous node count with fractional for smooth appearance
-  const nFloat = p * TREE.length;
-  const nFull = Math.floor(nFloat);
-  const vis = TREE.slice(0, Math.min(nFull + 1, TREE.length));
+  // Title
+  const tg = ctx.createLinearGradient(W/2-180, 0, W/2+180, 0);
+  tg.addColorStop(0, '#22c55e'); tg.addColorStop(0.5, C.green); tg.addColorStop(1, '#86efac');
+  txt('arborist', W/2, 68, { font: '900 58px Inter,sans-serif', color: tg, align: 'center' });
+  txt('Forest Cover Type — 50 experiment budget', W/2, 98,
+    { font: '400 17px Inter,sans-serif', color: '#3a3a3a', align: 'center' });
 
-  // Layout
-  const slots = {}, pos = {};
-  for (const [id, , depth, score] of vis) {
-    const slot = (slots[depth] = (slots[depth] || 0) + 1) - 1;
-    pos[id] = [chart.x(depth) + slot * 14, chart.y(score)];
+  const hDone = t >= HYBRID_END;
+  const lDone = t >= LINEAR_END;
+
+  // Panels
+  ctx.fillStyle = C.panel; ctx.strokeStyle = C.border; ctx.lineWidth = 1;
+  roundRect(L_X, PANEL_Y, L_W, PANEL_H, 14); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = C.panel; ctx.strokeStyle = C.border;
+  roundRect(H_X, PANEL_Y, H_W, PANEL_H, 14); ctx.fill(); ctx.stroke();
+
+  if (hDone) {
+    const fade = clamp((t - HYBRID_END) / 0.08, 0, 1);
+    ctx.save(); ctx.globalAlpha = fade * 0.6;
+    ctx.shadowColor = 'rgba(74,222,128,0.2)'; ctx.shadowBlur = 50;
+    ctx.strokeStyle = 'rgba(74,222,128,0.25)'; ctx.lineWidth = 2;
+    roundRect(H_X, PANEL_Y, H_W, PANEL_H, 14); ctx.stroke();
+    ctx.shadowBlur = 0; ctx.restore();
   }
 
-  // Edges (fade in with child node)
-  vis.forEach(([id, parent, , score], i) => {
-    if (!parent || !pos[parent]) return;
-    const [fx, fy] = pos[parent], [tx, ty] = pos[id];
-    const age = i < nFull ? 1 : ease(nFloat - nFull);
-    const mx = (fx + tx) / 2;
-    ctx.beginPath(); ctx.moveTo(fx, fy);
-    // Partial curve: interpolate endpoint for smooth growth
-    const cx = lerp(fx, tx, age), cy = lerp(fy, ty, age);
-    const cmx = (fx + cx) / 2;
-    ctx.bezierCurveTo(cmx, fy, cmx, cy, cx, cy);
-    ctx.globalAlpha = age;
-    ctx.strokeStyle = score > 0.34 ? 'rgba(74,222,128,0.35)' : 'rgba(161,161,170,0.12)';
-    ctx.lineWidth = score > 0.34 ? 2 : 1;
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  });
+  // Headers
+  txt('LINEAR + LLM', L_X + 20, PANEL_Y + 34, { font: '600 13px Inter,sans-serif', color: '#555' });
+  drawBadge(L_X + L_W - 108, PANEL_Y + 18, 'autoresearch', '#666', 'rgba(161,161,170,0.06)');
+  txt('HYBRID SEARCH', H_X + 24, PANEL_Y + 34, { font: '700 14px Inter,sans-serif', color: C.green });
+  drawBadge(H_X + H_W - 88, PANEL_Y + 18, 'arborist', C.green, 'rgba(74,222,128,0.06)');
 
-  // Best tracker
-  let best = 0, bestId = null;
-  for (const [id, , , s] of vis) if (s > best) { best = s; bestId = id; }
+  // Content
+  const lp = linearProg(t);
+  const hp = hybridProg(t);
+  const lStats = drawLinear(lp, t);
+  const hStats = drawHybrid(hp, t);
 
-  // Nodes (scale + fade in)
-  vis.forEach(([id, , , score], i) => {
-    const [x, y] = pos[id];
-    const age = i < nFull ? 1 : ease(nFloat - nFull);
-    const isBest = id === bestId;
+  // Timers
+  txt('⏱ ' + formatTime(lp * 2454), L_X + 20, PANEL_Y + PANEL_H - 16,
+    { font: '500 11px "JetBrains Mono",monospace', color: lDone ? '#333' : '#555' });
+  txt('⏱ ' + formatTime(hp * 1186), H_X + 24, PANEL_Y + PANEL_H - 16,
+    { font: '500 11px "JetBrains Mono",monospace', color: hDone ? '#444' : C.green });
 
-    ctx.save();
-    ctx.globalAlpha = age;
-
-    if (isBest && age > 0.5) {
-      const g = ctx.createRadialGradient(x, y, 0, x, y, 22);
-      g.addColorStop(0, 'rgba(74,222,128,0.35)'); g.addColorStop(1, 'rgba(74,222,128,0)');
-      circle(x, y, 22 * age); ctx.fillStyle = g; ctx.fill();
-    }
-
-    const r = (isBest ? 7 : 4.5) * age;
-    circle(x, y, r);
-    ctx.fillStyle = isBest ? C.green : score > 0.34 ? 'rgba(74,222,128,0.6)' : 'rgba(161,161,170,0.3)';
-    ctx.fill();
-
-    if ((isBest || score > 0.355) && age > 0.8)
-      text(score.toFixed(4), x + 10, y + 4, { font: '12px "JetBrains Mono", monospace', color: isBest ? C.green : 'rgba(74,222,128,0.5)' });
-
-    ctx.restore();
-  });
-
-  // UCB annotation
-  if (nFull > 6) {
-    const fade = Math.min((nFull - 6) / 3, 1);
+  // Done badge
+  if (hDone) {
+    const fade = clamp((t - HYBRID_END) / 0.06, 0, 1);
     ctx.save(); ctx.globalAlpha = fade;
-    text('UCB balances explore ↔ exploit', chart.ox + 4, chart.oy + 14, { font: '12px Inter', color: 'rgba(96,165,250,0.4)' });
+    ctx.fillStyle = 'rgba(34,197,94,0.12)';
+    roundRect(H_X + H_W - 96, PANEL_Y + PANEL_H - 28, 76, 22, 5); ctx.fill();
+    txt('✓ DONE', H_X + H_W - 84, PANEL_Y + PANEL_H - 13,
+      { font: '600 11px Inter,sans-serif', color: C.green });
     ctx.restore();
   }
 
-  // Linear plateau reference (fades in after tree completes)
-  if (p >= 1) {
-    const fade = Math.min((t - TREE_END) / 0.05, 1);
-    ctx.save(); ctx.globalAlpha = Math.max(0, fade);
-    ctx.setLineDash([5, 5]);
-    ctx.strokeStyle = C.red + '0.25)'; ctx.lineWidth = 1;
-    line(chart.ox, chart.y(0.3632), chart.ox + chart.w, chart.y(0.3632));
+  // Still searching
+  if (hDone && !lDone) {
+    const pulse = 0.35 + 0.25 * Math.sin(t * 10);
+    ctx.save(); ctx.globalAlpha = pulse;
+    txt('still searching...', L_X + L_W/2, PANEL_Y + PANEL_H - 44,
+      { font: '500 11px Inter,sans-serif', color: '#444', align: 'center' });
+    ctx.restore();
+  }
+
+  // Stats
+  const sy = PANEL_Y + PANEL_H + 16;
+  txt(lStats.best.toFixed(4), L_X + 20, sy + 18, { font: '700 24px "JetBrains Mono",monospace', color: '#777' });
+  txt('Best F1', L_X + 20, sy + 34, { font: '500 11px Inter,sans-serif', color: '#444' });
+  txt(lStats.exp + ' exp · ' + lStats.imps + ' improvements', L_X + 20, sy + 56,
+    { font: '500 12px Inter,sans-serif', color: '#444' });
+  if (lStats.plateau > 0) {
+    txt(lStats.plateau + ' wasted (no gain)', L_X + 20, sy + 74,
+      { font: '500 12px Inter,sans-serif', color: 'rgba(239,68,68,0.5)' });
+  }
+
+  txt(hStats.best.toFixed(4), H_X + 24, sy + 18, { font: '700 28px "JetBrains Mono",monospace', color: C.green });
+  txt('Best F1', H_X + 24, sy + 36, { font: '500 11px Inter,sans-serif', color: '#555' });
+
+  if (hDone) {
+    const fade = clamp((t - HYBRID_END) / 0.12, 0, 1);
+    ctx.save(); ctx.globalAlpha = fade;
+    const sx = H_X + 200;
+    txt('+1.1%', sx, sy + 18, { font: '700 22px "JetBrains Mono",monospace', color: C.green });
+    txt('vs linear', sx + 76, sy + 18, { font: '400 15px Inter,sans-serif', color: '#555' });
+    txt('2–10×', sx + 190, sy + 18, { font: '700 22px "JetBrains Mono",monospace', color: C.green });
+    txt('faster', sx + 264, sy + 18, { font: '400 15px Inter,sans-serif', color: '#555' });
+    txt(hStats.abandoned + ' dead ends pruned  ·  Best at experiment ' + hStats.bestAt + '  ·  3 explore/exploit cycles',
+      sx, sy + 42, { font: '500 12px Inter,sans-serif', color: '#555' });
+    ctx.restore();
+  }
+
+  // Legend
+  const ly = H - 28;
+  const items = [
+    [C.green,     'Winning path'],
+    [C.blue,      'Explore (UCB branching)'],
+    [C.candidate, 'Evaluating'],
+    [C.orange,    'Exploit (hill climb)'],
+    ['#555',      'Pruned (dead end)'],
+  ];
+  const legW = 720, legStart = W/2 - legW/2;
+  items.forEach(([c, l], i) => {
+    const x = legStart + i * (legW / items.length);
+    circle(x + 4, ly, 4); ctx.fillStyle = c; ctx.fill();
+    txt(l, x + 14, ly + 4, { font: '12px Inter,sans-serif', color: '#555' });
+  });
+}
+
+// ── LINEAR PANEL ────────────────────────────────────────────────────
+function drawLinear(p, t) {
+  const ox = L_X + PAD.l, oy = PANEL_Y + PAD.t;
+  const cw = L_W - PAD.l - PAD.r, ch = PANEL_H - PAD.t - PAD.b;
+  const yMin = 0.82, yMax = 0.895;
+  const toX = v => ox + (v / LIN_MAX) * cw;
+  const toY = v => oy + ch - ((v - yMin) / (yMax - yMin)) * ch;
+
+  ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
+  for (let s = yMin; s <= yMax + 0.001; s += 0.02) {
+    line(ox, toY(s), ox + cw, toY(s));
+    txt(s.toFixed(2), ox - 8, toY(s) + 4, { font: '10px "JetBrains Mono",monospace', color: '#282828', align: 'right' });
+  }
+  for (let e = 0; e <= 50; e += 25) {
+    txt(String(e), toX(e), oy + ch + 16, { font: '10px "JetBrains Mono",monospace', color: '#282828', align: 'center' });
+  }
+
+  const vis = p * LIN_MAX;
+  const imps = LIN_IMPS.filter(([e]) => e <= vis);
+
+  for (const d of LIN_DOTS) {
+    if (d.e > vis || d.kept) continue;
+    circle(toX(d.e), toY(d.s), 2);
+    ctx.fillStyle = `rgba(161,161,170,${clamp((vis-d.e)/4,0,1) * 0.12})`; ctx.fill();
+  }
+
+  if (imps.length) {
+    ctx.beginPath(); ctx.strokeStyle = 'rgba(96,165,250,0.6)'; ctx.lineWidth = 2;
+    imps.forEach(([e, s], i) => {
+      const next = i < imps.length - 1 ? imps[i+1][0] : Math.min(vis, LIN_MAX);
+      i === 0 ? ctx.moveTo(toX(e), toY(s)) : ctx.lineTo(toX(e), toY(s));
+      ctx.lineTo(toX(next), toY(s));
+    });
+    ctx.stroke();
+    for (const [e, s] of imps) {
+      const age = easeOut(clamp((vis-e)/3,0,1));
+      if (age > 0.3) { circle(toX(e), toY(s), 3.5*age); ctx.fillStyle = `rgba(96,165,250,${0.6*age})`; ctx.fill(); }
+    }
+  }
+
+  let plateauCount = 0;
+  if (vis > 48) {
+    plateauCount = Math.round(vis - 48);
+    const fade = clamp((vis-44)/6,0,1);
+    const px = toX(48);
+    ctx.save(); ctx.globalAlpha = fade;
+    ctx.fillStyle = 'rgba(239,68,68,0.03)';
+    ctx.fillRect(px, oy, toX(Math.min(vis,LIN_MAX))-px, ch);
+    ctx.setLineDash([4,4]); ctx.strokeStyle = 'rgba(239,68,68,0.25)'; ctx.lineWidth = 1;
+    line(px, oy, px, oy+ch); ctx.setLineDash([]);
+    if (vis >= 49) {
+      const pulse = 0.4+0.3*Math.sin(t*8);
+      ctx.globalAlpha = fade*pulse;
+      txt('STUCK', toX(49), oy+ch/2-4, { font: '800 18px Inter,sans-serif', color: 'rgba(239,68,68,0.35)', align: 'center' });
+      ctx.globalAlpha = fade*0.6;
+      txt(plateauCount + ' exp wasted', toX(49), oy+ch/2+16, { font: '500 10px Inter,sans-serif', color: 'rgba(239,68,68,0.3)', align: 'center' });
+    }
+    ctx.restore();
+  }
+
+  return { best: imps.length ? imps[imps.length-1][1] : 0.82, exp: Math.round(vis), imps: imps.length, plateau: plateauCount };
+}
+
+// ── HYBRID PANEL (HERO) ─────────────────────────────────────────────
+function drawHybrid(hp, globalT) {
+  const ox = H_X + PAD.l + 10, oy = PANEL_Y + PAD.t;
+  const cw = H_W - PAD.l - PAD.r - 20, ch = PANEL_H - PAD.t - PAD.b;
+
+  function pos(nd) { return { x: ox + nd.x * cw, y: oy + nd.y * ch }; }
+
+  const states = computeNodeStates(hp);
+
+  let best = 0, bestId = null, bestAt = 0, abandoned = 0;
+  let visCount = 0;
+
+  // Count visible nodes and stats
+  for (const [id, nd] of Object.entries(NODES)) {
+    const st = states[id];
+    if (st.state !== 'hidden') {
+      visCount++;
+      if (nd.f > best) { best = nd.f; bestId = id; bestAt = visCount; }
+      if (st.state === 'pruned' || st.state === 'pruning') abandoned++;
+    }
+  }
+
+  // === Draw edges with progressive animation ===
+  // Edges "grow" from parent toward child based on node's appearance progress
+  for (const [id, nd] of Object.entries(NODES)) {
+    if (!nd.par) continue;
+    const st = states[id];
+    if (st.state === 'hidden') continue;
+
+    const from = pos(NODES[nd.par]);
+    const to = pos(nd);
+    const parSt = states[nd.par];
+
+    // Edge draw progress: how far along the edge is drawn (0 = nothing, 1 = full)
+    // Uses alpha as proxy for appearance progress, but with a faster ramp
+    const drawProg = clamp(st.alpha * 1.3, 0, 1);
+
+    ctx.save();
+    ctx.globalAlpha = st.alpha * (parSt.alpha || 1);
+
+    const isPruned = st.state === 'pruned' || st.state === 'pruning';
+    const isBP = BEST_PATH.has(id) && BEST_PATH.has(nd.par);
+    const isEval = st.state === 'evaluating';
+    const isCandidate = st.state === 'candidate';
+
+    if (isPruned) {
+      ctx.strokeStyle = 'rgba(100,100,100,0.12)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 5]);
+    } else if (isEval || isCandidate) {
+      ctx.strokeStyle = `rgba(167,139,250,${0.3 + st.glow * 0.4})`;
+      ctx.lineWidth = 2;
+    } else if (isBP && nd.ph === 'exploit') {
+      ctx.strokeStyle = 'rgba(251,146,60,0.65)';
+      ctx.lineWidth = 3;
+    } else if (isBP) {
+      ctx.strokeStyle = 'rgba(74,222,128,0.45)';
+      ctx.lineWidth = 2.5;
+    } else {
+      ctx.strokeStyle = 'rgba(96,165,250,0.15)';
+      ctx.lineWidth = 1;
+    }
+
+    // Draw edge progressively using sub-path
+    if (nd.ph === 'exploit' && !isPruned && !isCandidate && !isEval) {
+      // Straight line — interpolate endpoint
+      const ex = lerp(from.x, to.x, drawProg);
+      const ey = lerp(from.y, to.y, drawProg);
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(ex, ey);
+    } else {
+      // Bezier curve — split at drawProg using de Casteljau
+      const mx = (from.x + to.x) / 2;
+      // Control points: P0=from, P1=(mx, from.y), P2=(mx, to.y), P3=to
+      const p = drawProg;
+      // de Casteljau for cubic bezier at parameter p
+      const p0 = {x: from.x, y: from.y};
+      const p1 = {x: mx, y: from.y};
+      const p2 = {x: mx, y: to.y};
+      const p3 = {x: to.x, y: to.y};
+
+      const q0 = {x: lerp(p0.x,p1.x,p), y: lerp(p0.y,p1.y,p)};
+      const q1 = {x: lerp(p1.x,p2.x,p), y: lerp(p1.y,p2.y,p)};
+      const q2 = {x: lerp(p2.x,p3.x,p), y: lerp(p2.y,p3.y,p)};
+
+      const r0 = {x: lerp(q0.x,q1.x,p), y: lerp(q0.y,q1.y,p)};
+      const r1 = {x: lerp(q1.x,q2.x,p), y: lerp(q1.y,q2.y,p)};
+
+      const s0 = {x: lerp(r0.x,r1.x,p), y: lerp(r0.y,r1.y,p)};
+
+      // Draw the first sub-curve (from start to parameter p)
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.bezierCurveTo(q0.x, q0.y, r0.x, r0.y, s0.x, s0.y);
+    }
+    ctx.stroke();
     ctx.setLineDash([]);
-    text('linear plateau: 0.3632', chart.ox + chart.w, chart.y(0.3632) - 6, { font: '11px Inter', color: C.red + '0.5)', align: 'right' });
+
+    // Leading dot on growing edges (only while still drawing in)
+    if (drawProg < 0.95 && drawProg > 0.05 && !isPruned) {
+      let tipX, tipY;
+      if (nd.ph === 'exploit' && !isCandidate && !isEval) {
+        tipX = lerp(from.x, to.x, drawProg);
+        tipY = lerp(from.y, to.y, drawProg);
+      } else {
+        const mx = (from.x + to.x) / 2;
+        const p = drawProg;
+        const q0x = lerp(from.x,mx,p), q0y = lerp(from.y,from.y,p);
+        const q1x = lerp(mx,mx,p), q1y = lerp(from.y,to.y,p);
+        const q2x = lerp(mx,to.x,p), q2y = lerp(to.y,to.y,p);
+        const r0x = lerp(q0x,q1x,p), r0y = lerp(q0y,q1y,p);
+        const r1x = lerp(q1x,q2x,p), r1y = lerp(q1y,q2y,p);
+        tipX = lerp(r0x,r1x,p); tipY = lerp(r0y,r1y,p);
+      }
+      // Small bright dot at the tip
+      const tipColor = isEval || isCandidate ? C.candidate : (isBP && nd.ph === 'exploit' ? C.orange : (isBP ? C.green : C.blue));
+      circle(tipX, tipY, 3);
+      ctx.fillStyle = tipColor; ctx.fill();
+    }
+
     ctx.restore();
   }
 
-  const branches = new Set(vis.filter(([,p2]) => p2).map(([,p2]) => p2)).size;
-  return { best, nodes: Math.min(nFull + 1, TREE.length), branches };
+  // === Draw nodes ===
+  for (const [id, nd] of Object.entries(NODES)) {
+    const st = states[id];
+    if (st.state === 'hidden') continue;
+
+    const {x, y} = pos(nd);
+    ctx.save(); ctx.globalAlpha = st.alpha;
+
+    const isBP = BEST_PATH.has(id);
+
+    if (st.state === 'pruned' || st.state === 'pruning') {
+      // Gray dead node — larger for visibility
+      circle(x, y, 6);
+      ctx.fillStyle = `rgba(80,80,80,${0.2 * st.alpha})`; ctx.fill();
+      ctx.strokeStyle = `rgba(80,80,80,${0.15 * st.alpha})`; ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Red X — big, bold, dramatic
+      const xAlpha = st.pruneT || 1;
+      if (xAlpha > 0.1) {
+        ctx.globalAlpha = st.alpha * xAlpha;
+
+        // Red glow behind X
+        const xGlow = ctx.createRadialGradient(x, y, 0, x, y, 14 * xAlpha);
+        xGlow.addColorStop(0, `rgba(239,68,68,${0.15 * xAlpha})`);
+        xGlow.addColorStop(1, 'rgba(0,0,0,0)');
+        circle(x, y, 14 * xAlpha); ctx.fillStyle = xGlow; ctx.fill();
+
+        ctx.strokeStyle = `rgba(239,68,68,${0.6 * xAlpha})`; ctx.lineWidth = 2.5;
+        ctx.lineCap = 'round';
+        const s = 6;
+        line(x-s, y-s, x+s, y+s);
+        line(x+s, y-s, x-s, y+s);
+        ctx.lineCap = 'butt';
+      }
+    }
+    else if (st.state === 'evaluating') {
+      // Purple pulsing node — "thinking"
+      const gr = ctx.createRadialGradient(x, y, 0, x, y, 16);
+      gr.addColorStop(0, `rgba(167,139,250,${0.3 * st.glow})`);
+      gr.addColorStop(1, 'rgba(0,0,0,0)');
+      circle(x, y, 16); ctx.fillStyle = gr; ctx.fill();
+
+      circle(x, y, 6);
+      ctx.fillStyle = `rgba(167,139,250,${0.7 + 0.3 * st.glow})`; ctx.fill();
+
+      // F1 score during evaluation
+      txt(nd.f.toFixed(4), x, y - 14,
+        { font: '600 10px "JetBrains Mono",monospace', color: `rgba(167,139,250,${0.6 + 0.4 * st.glow})`, align: 'center' });
+    }
+    else if (st.state === 'candidate') {
+      // Blue-ish candidate, just appeared
+      const gr = ctx.createRadialGradient(x, y, 0, x, y, 12);
+      gr.addColorStop(0, `rgba(96,165,250,${0.15 * st.alpha})`);
+      gr.addColorStop(1, 'rgba(0,0,0,0)');
+      circle(x, y, 12); ctx.fillStyle = gr; ctx.fill();
+
+      circle(x, y, 5);
+      ctx.fillStyle = `rgba(96,165,250,${0.6 * st.alpha})`; ctx.fill();
+    }
+    else if (st.state === 'winner') {
+      // Bright green winner with glow
+      const gr = ctx.createRadialGradient(x, y, 0, x, y, 20 * st.glow);
+      gr.addColorStop(0, `rgba(74,222,128,${0.4 * st.glow})`);
+      gr.addColorStop(1, 'rgba(0,0,0,0)');
+      circle(x, y, 20 * st.glow); ctx.fillStyle = gr; ctx.fill();
+
+      circle(x, y, 7);
+      ctx.fillStyle = C.green; ctx.fill();
+
+      txt(nd.f.toFixed(4), x, y - 16,
+        { font: '700 11px "JetBrains Mono",monospace', color: C.green, align: 'center' });
+    }
+    else if (st.state === 'settled') {
+      // Settled node on best path
+      const isExploit = nd.ph === 'exploit';
+      const nodeColor = isBP ? (isExploit ? C.orange : C.green) : '#555';
+      const isFinal = id === 'X3c' && best >= 0.8748;
+
+      if (st.glow > 0.1) {
+        const gr = ctx.createRadialGradient(x, y, 0, x, y, (isFinal ? 24 : 12) * st.glow);
+        const gc = isFinal ? 'rgba(74,222,128,' : (isExploit ? 'rgba(251,146,60,' : 'rgba(74,222,128,');
+        gr.addColorStop(0, gc + (0.3 * st.glow) + ')');
+        gr.addColorStop(1, 'rgba(0,0,0,0)');
+        circle(x, y, (isFinal ? 24 : 12) * st.glow); ctx.fillStyle = gr; ctx.fill();
+      }
+
+      const r = isFinal ? 9 : (id === 'R' ? 7 : 5.5);
+      circle(x, y, r);
+      ctx.fillStyle = nodeColor; ctx.fill();
+
+      // Labels on key nodes
+      if ((isFinal || id === 'R' || id === 'X1c' || id === 'X2c' || id === 'E2a') && st.alpha > 0.7) {
+        txt(nd.f.toFixed(4), x, y - r - 8,
+          { font: '700 11px "JetBrains Mono",monospace', color: nodeColor, align: 'center' });
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // === Celebration on final node ===
+  if (states['X3c'] && states['X3c'].state === 'settled' && best >= 0.8748) {
+    const {x, y} = pos(NODES['X3c']);
+    const pulse = 0.7 + 0.3 * Math.sin(globalT * 14);
+
+    const gr = ctx.createRadialGradient(x, y, 0, x, y, 50 * pulse);
+    gr.addColorStop(0, 'rgba(74,222,128,0.45)');
+    gr.addColorStop(0.35, 'rgba(74,222,128,0.12)');
+    gr.addColorStop(1, 'rgba(74,222,128,0)');
+    circle(x, y, 50 * pulse); ctx.fillStyle = gr; ctx.fill();
+
+    circle(x, y, 10);
+    ctx.fillStyle = C.green; ctx.fill();
+
+    ctx.save();
+    ctx.shadowColor = C.green; ctx.shadowBlur = 14;
+    txt('0.8750', x, y - 22,
+      { font: '800 16px "JetBrains Mono",monospace', color: C.green, align: 'center' });
+    ctx.restore();
+  }
+
+  // === Phase labels ===
+  const phaseAnnotations = [
+    { t0: 0.04, t1: 0.22, label: 'EXPLORE', x: 0.13, y: 0.82, color: C.blue },
+    { t0: 0.22, t1: 0.36, label: 'EXPLOIT', x: 0.31, y: 0.82, color: C.orange },
+    { t0: 0.36, t1: 0.54, label: 'EXPLORE', x: 0.49, y: 0.82, color: C.blue },
+    { t0: 0.54, t1: 0.68, label: 'EXPLOIT', x: 0.64, y: 0.82, color: C.orange },
+    { t0: 0.68, t1: 0.84, label: 'EXPLORE', x: 0.79, y: 0.82, color: C.blue },
+    { t0: 0.84, t1: 1.00, label: 'EXPLOIT', x: 0.92, y: 0.82, color: C.orange },
+  ];
+
+  phaseAnnotations.forEach(a => {
+    const vis = clamp((hp - a.t0) / 0.04, 0, 1);
+    if (vis <= 0) return;
+    const active = hp >= a.t0 && hp < a.t1;
+    ctx.save(); ctx.globalAlpha = active ? 0.7 : vis * 0.35;
+    txt(a.label, ox + a.x * cw, oy + a.y * ch,
+      { font: (active ? '700' : '600') + ' 10px Inter,sans-serif', color: a.color, align: 'center' });
+    ctx.restore();
+  });
+
+  // === "evaluating..." annotation during explore evaluation sub-phase ===
+  for (const phase of PHASES) {
+    if (phase.type !== 'explore') continue;
+    const phaseT = clamp((hp - phase.t0) / (phase.t1 - phase.t0), 0, 1);
+    if (phaseT >= phase.extend && phaseT < phase.evaluate) {
+      // Show "evaluating..." label
+      const midX = ox + (NODES[phase.branches[0]].x + 0.04) * cw;
+      const topY = oy + 0.04 * ch;
+      const pulse = 0.5 + 0.4 * Math.sin(globalT * 12);
+      ctx.save(); ctx.globalAlpha = pulse;
+      txt('evaluating...', midX, topY,
+        { font: '500 11px Inter,sans-serif', color: C.candidate, align: 'center' });
+      ctx.restore();
+    }
+    // "pruning" annotation
+    if (phaseT >= phase.evaluate && phaseT < phase.prune) {
+      const midX = ox + (NODES[phase.branches[0]].x + 0.04) * cw;
+      const topY = oy + 0.04 * ch;
+      const subT = (phaseT - phase.evaluate) / (phase.prune - phase.evaluate);
+      ctx.save(); ctx.globalAlpha = 0.5 * (1 - subT);
+      txt('pruning dead ends', midX, topY,
+        { font: '500 11px Inter,sans-serif', color: C.red, align: 'center' });
+      ctx.restore();
+    }
+  }
+
+  return { best, exp: visCount, abandoned, bestAt };
 }
 
-// — Shared components ————————————————————————————————————————
-
+// ── HELPERS ─────────────────────────────────────────────────────────
 function drawBadge(x, y, label, color, bg) {
-  ctx.font = '500 12px "JetBrains Mono", monospace';
+  ctx.font = '500 11px "JetBrains Mono",monospace';
   const w = ctx.measureText(label).width + 16;
-  ctx.fillStyle = bg; roundRect(x, y, w, 24, 5); ctx.fill();
-  text(label, x + 8, y + 16, { color });
+  ctx.fillStyle = bg; roundRect(x, y, w, 22, 4); ctx.fill();
+  txt(label, x+8, y+15, { color });
 }
 
-function drawTimer(x, y, timeStr, done) {
-  const color = done ? 'rgba(161,161,170,0.3)' : 'rgba(96,165,250,0.5)';
-  const icon = done ? '⏱' : '⏱';
-  text(icon + ' ' + timeStr, x, y, { font: '500 13px "JetBrains Mono", monospace', color });
-}
-
-function formatTime(minutes) {
-  if (minutes < 1) return Math.round(minutes * 60) + 's';
-  const m = Math.floor(minutes);
-  const s = Math.round((minutes - m) * 60);
-  return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
-}
-
-function drawStatRow(px, y, stats) {
-  const w = PW / 3;
-  stats.forEach(([val, label, color], i) => {
-    const cx = px + w * i + w / 2;
-    text(val, cx, y + 8, { font: '700 26px "JetBrains Mono", monospace', color, align: 'center' });
-    text(label, cx, y + 26, { font: '500 10px Inter', color: C.muted, align: 'center' });
-  });
-}
-
-function drawLegend(cx, y) {
-  [[C.green, 'Kept improvement'], ['rgba(161,161,170,0.3)', 'Discarded'], [C.blue, 'Running best']].forEach(([c, l], i) => {
-    const x = cx - 240 + i * 160;
-    circle(x + 6, y, 5); ctx.fillStyle = c; ctx.fill();
-    text(l, x + 16, y + 4, { font: '12px Inter', color: C.muted });
-  });
-}
-
-// — API for capture script ———————————————————————————————————
-// renderFrame takes normalized t (0..1)
 window.renderFrame = renderFrame;
 renderFrame(0);
 

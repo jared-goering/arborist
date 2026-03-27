@@ -249,7 +249,7 @@ class TestPythonExecutor:
         import time
 
         def slow_fn(config):
-            time.sleep(5)
+            time.sleep(0.5)
             return {"score": 1}
 
         executor = PythonExecutor(fn=slow_fn, timeout=0.1)

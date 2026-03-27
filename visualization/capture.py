@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Capture animation frames via CDP and stitch with ffmpeg."""
-import subprocess, base64, os, json, socket
+import subprocess, os
 
 FRAMES_DIR = "/tmp/arborist_frames"
 os.makedirs(FRAMES_DIR, exist_ok=True)
@@ -10,37 +10,18 @@ for f in os.listdir(FRAMES_DIR):
     if f.endswith('.png'):
         os.unlink(os.path.join(FRAMES_DIR, f))
 
-# Animation params
+# Animation params — three-way benchmark visualization
+# renderFrame(t) takes normalized t in 0..1
 FPS = 30
-SPEED = 1.5
-MAX_LINEAR = 100
-TREE_COUNT = 23
-TOTAL_ANIM_FRAMES = int(max(MAX_LINEAR, TREE_COUNT * 3) / SPEED) + 5
-INTRO_HOLD = FPS * 1
-END_HOLD = FPS * 3
+TOTAL_ANIM_FRAMES = 420   # 14s animation (more time for phases)
+INTRO_HOLD = FPS * 1      # 1s hold at t=0
+END_HOLD = FPS * 3        # 3s hold at t=1
 TOTAL_FRAMES = INTRO_HOLD + TOTAL_ANIM_FRAMES + END_HOLD
 
-print(f"Rendering {TOTAL_FRAMES} frames")
+print(f"Rendering {TOTAL_FRAMES} frames ({TOTAL_FRAMES/FPS:.1f}s)")
 
-# Simple CDP via raw websocket (no external deps)
-import http.client
-import hashlib
-import struct
-import ssl
+TARGET_ID = "411502354DB67B181DD44B302D2CA9B3"
 
-# Use simple HTTP to get CDP info, then use subprocess with node for WS
-# Actually, let's just use curl + Chrome's HTTP endpoints
-
-# Alternative: use Chrome DevTools Protocol via HTTP
-TARGET_ID = "A27B47780D01BEDAAC87C538E3C30216"
-CDP_HOST = "127.0.0.1"
-CDP_PORT = 18800
-
-def cdp_request(method, params=None):
-    """Make CDP request via HTTP (won't work for most methods, need WS)"""
-    pass
-
-# Let's use node.js for the CDP connection since it's available
 node_script = f"""
 const WebSocket = require('ws');
 const fs = require('fs');
@@ -49,14 +30,12 @@ const path = require('path');
 const WS_URL = 'ws://127.0.0.1:18800/devtools/page/{TARGET_ID}';
 const FRAMES_DIR = '{FRAMES_DIR}';
 const FPS = {FPS};
-const SPEED = {SPEED};
 const TOTAL_ANIM = {TOTAL_ANIM_FRAMES};
 const INTRO = {INTRO_HOLD};
 const HOLD = {END_HOLD};
 
 let msgId = 1;
 const pending = new Map();
-
 const ws = new WebSocket(WS_URL);
 
 ws.on('open', async () => {{
@@ -96,48 +75,46 @@ async function screenshot() {{
 async function run() {{
   let frame = 0;
 
-  // Intro
+  // Intro hold
   for (let i = 0; i < INTRO; i++) {{
     await evaluate('renderFrame(0)');
     const png = await screenshot();
-    fs.writeFileSync(path.join(FRAMES_DIR, \`frame_${{String(frame).padStart(5, '0')}}.png\`), png);
+    fs.writeFileSync(path.join(FRAMES_DIR, `frame_${{String(frame).padStart(5, '0')}}.png`), png);
     frame++;
-    if (i % FPS === 0) console.log(\`Intro ${{i}}/${{INTRO}}\`);
+    if (i % FPS === 0) console.log(`Intro ${{i}}/${{INTRO}}`);
   }}
 
-  // Animation
+  // Animation — t normalized 0..1
   for (let f = 0; f < TOTAL_ANIM; f++) {{
-    const v = f * SPEED;
-    await evaluate(\`renderFrame(${{v}})\`);
+    const t = f / (TOTAL_ANIM - 1);
+    await evaluate(`renderFrame(${{t}})`);
     const png = await screenshot();
-    fs.writeFileSync(path.join(FRAMES_DIR, \`frame_${{String(frame).padStart(5, '0')}}.png\`), png);
+    fs.writeFileSync(path.join(FRAMES_DIR, `frame_${{String(frame).padStart(5, '0')}}.png`), png);
     frame++;
-    if (f % 10 === 0) console.log(\`Anim ${{f}}/${{TOTAL_ANIM}}\`);
+    if (f % 30 === 0) console.log(`Anim ${{f}}/${{TOTAL_ANIM}} (t=${{t.toFixed(3)}})`);
   }}
 
-  // Hold
-  const finalVal = TOTAL_ANIM * SPEED;
+  // End hold
   for (let i = 0; i < HOLD; i++) {{
-    await evaluate(\`renderFrame(${{finalVal}})\`);
+    await evaluate('renderFrame(1)');
     const png = await screenshot();
-    fs.writeFileSync(path.join(FRAMES_DIR, \`frame_${{String(frame).padStart(5, '0')}}.png\`), png);
+    fs.writeFileSync(path.join(FRAMES_DIR, `frame_${{String(frame).padStart(5, '0')}}.png`), png);
     frame++;
-    if (i % FPS === 0) console.log(\`Hold ${{i}}/${{HOLD}}\`);
+    if (i % FPS === 0) console.log(`Hold ${{i}}/${{HOLD}}`);
   }}
 
-  console.log(\`Done: ${{frame}} frames\`);
+  console.log(`Done: ${{frame}} frames`);
   ws.close();
   process.exit(0);
 }}
 """
 
-# Write and run node script
 node_path = os.path.join(FRAMES_DIR, "capture.js")
 with open(node_path, 'w') as f:
     f.write(node_script)
 
 print("Starting frame capture via Node.js...")
-result = subprocess.run(["node", node_path], capture_output=True, text=True, timeout=300)
+result = subprocess.run(["node", node_path], capture_output=True, text=True, timeout=600)
 print(result.stdout)
 if result.stderr:
     print("STDERR:", result.stderr[:500])
@@ -146,7 +123,7 @@ if result.returncode != 0:
     exit(1)
 
 # Stitch with ffmpeg
-output = "/Users/jared/Projects/arborist/visualization/arborist-animation.mp4"
+output = "/Users/jared/Projects/arborist/visualization/arborist-threeway.mp4"
 cmd = [
     "ffmpeg", "-y",
     "-framerate", str(FPS),
@@ -158,7 +135,7 @@ cmd = [
     "-vf", "scale=1920:1080",
     output
 ]
-print(f"Stitching with ffmpeg...")
+print("Stitching with ffmpeg...")
 subprocess.run(cmd, check=True)
-print(f"\\n✅ Done: {output}")
+print(f"\n✅ Done: {output}")
 print(f"Size: {os.path.getsize(output) / 1024 / 1024:.1f} MB")

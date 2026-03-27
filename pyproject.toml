@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Jared", email = "jared@arborist.dev" },
+    { name = "Jared Goering", email = "goering.jared@gmail.com" },
 ]
 keywords = ["tree-search", "experiment", "orchestration", "agentic", "mcts"]
 classifiers = [
@@ -41,9 +41,9 @@ dev = [
 arborist = "arborist.cli:cli"
 
 [project.urls]
-Homepage = "https://github.com/jared/arborist"
-Repository = "https://github.com/jared/arborist"
-Issues = "https://github.com/jared/arborist/issues"
+Homepage = "https://github.com/jared-goering/arborist"
+Repository = "https://github.com/jared-goering/arborist"
+Issues = "https://github.com/jared-goering/arborist/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

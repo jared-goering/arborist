@@ -1,4 +1,40 @@
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 *.db
+
+# Logs & output
+*.log
+*.mp4
+
+# Private experiment data
+sleep_journals/
+sleep_journals_v2/
+scientist_journals/
+experiments/
+benchmarks/
+data/
+examples/sleep_staging.py
+
+# Internal dev notes
+sleep_arborist.md
+sleep_llm_mutator.md
+SCIENTIST.md
+benchmark_output.log
+benchmark_comparison.py
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Distribution
+dist/
+build/
+*.egg-info/
