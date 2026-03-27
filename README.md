@@ -17,6 +17,8 @@ Linear hyperparameter sweeps (grid, random, Bayesian) explore one path at a time
 
 Arborist treats your experiment space as a **tree**. It branches into multiple directions simultaneously, evaluates results, prunes dead ends, and doubles down on what works. The same way AlphaGo explores game states, but for ML experiments.
 
+![Arborist hybrid search finishes in half the time while linear autoresearch is still stuck](docs/images/comparison.png)
+
 **Results from our benchmarks:**
 
 | Dataset | Strategy | F1 Score | Experiments | Wall Time |
