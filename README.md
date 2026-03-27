@@ -1,52 +1,124 @@
-# Arborist
+<![CDATA[# 🌳 Arborist
 
-Agentic tree search engine for parallelized experiment orchestration. Define a goal, let it branch, evaluate, prune, and converge.
+[![Tests](https://github.com/jared-goering/arborist/actions/workflows/test.yml/badge.svg)](https://github.com/jared-goering/arborist/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/arborist-ai)](https://pypi.org/project/arborist-ai/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-**Local-first. LLM-agnostic. Resumable. Composable.**
+**Tree search for ML experiments.** Define a goal. Arborist branches, evaluates, prunes, and converges. Like MCTS, but for hyperparameter tuning and feature engineering.
 
 ```
 pip install arborist-ai
 ```
+
+## Why tree search?
+
+Linear hyperparameter sweeps (grid, random, Bayesian) explore one path at a time. When they hit a local optimum, they're stuck.
+
+Arborist treats your experiment space as a **tree**. It branches into multiple directions simultaneously, evaluates results, prunes dead ends, and doubles down on what works. The same way AlphaGo explores game states, but for ML experiments.
+
+**Results from our benchmarks:**
+
+| Dataset | Strategy | F1 Score | Experiments | Wall Time |
+|---------|----------|----------|-------------|-----------|
+| Forest Cover Type | Linear + LLM | 0.8659 | 50 | 2454s |
+| Forest Cover Type | Tree + LLM (UCB) | 0.8683 | 50 | 1793s |
+| Forest Cover Type | **Hybrid (explore + exploit)** | **0.8750** | 50 | **1186s** |
+
+The hybrid strategy found a better solution **2x faster** by exploring broadly with UCB, then hill-climbing from the best region.
 
 ## Quickstart
 
 ```python
 from arborist import TreeSearch
 
-# Define your experiment
-def my_experiment(config):
-    x = config["x"]
-    return {"score": -(x - 3) ** 2 + 10}
-
-# Run a search
 search = TreeSearch(
     goal="Find optimal x",
-    executor=my_experiment,
+    executor=lambda config: {"score": -(config["x"] - 3) ** 2 + 10},
     score=lambda r: r["score"],
     seed_configs=[{"x": 0}, {"x": 1}, {"x": 5}],
     strategy="ucb",
     max_experiments=50,
-    max_depth=4,
 )
 
 results = search.run()
 print(f"Best: {results.best['score']:.4f}")
 print(f"Config: {results.best['config']}")
+```
+
+## How it works
+
+```
+Seed configs
+    │
+    ├── Execute experiments (parallel)
+    ├── Score results
+    ├── Expand promising nodes (LLM or custom mutator)
+    ├── Prune dead ends
+    └── Repeat until budget/target/plateau
+```
+
+Everything persists to SQLite. Kill the process, restart later, pick up where you left off.
+
+## Features
+
+- **Tree search strategies**: UCB1 (explore/exploit balance), best-first (greedy), breadth-first (systematic), hybrid (adaptive phase switching)
+- **LLM-guided mutations**: Uses any model via litellm to analyze results and suggest new configs. Falls back to random perturbation if no LLM available.
+- **Parallel execution**: Run multiple experiments concurrently with configurable concurrency limits
+- **SQLite persistence**: Every node, config, and result stored. Resume any search. Query history.
+- **Custom everything**: Bring your own executor, evaluator, mutator, or strategy
+- **Shell executor**: Point it at any training script. No code changes needed.
+- **CLI included**: `arborist run`, `arborist status`, `arborist report`
+- **Budget controls**: Cap by experiment count, wall time, dollar cost, or target score
+
+## Strategies
+
+| Strategy | How it works | Best for |
+|----------|-------------|----------|
+| `ucb` | UCB1 bandit algorithm. Balances exploration of untried branches with exploitation of high scorers. | General use. Unknown search spaces. |
+| `best_first` | Always expands the highest-scoring node. Pure exploitation. | When you already know a good region. |
+| `breadth_first` | Level-by-level. Every node at depth N before any at N+1. | Systematic coverage. Small spaces. |
+| `hybrid` | Starts with UCB exploration, detects plateau, switches to greedy hill-climb from the best node. Cycles back to explore if exploit stalls. | **Best overall.** Finds good regions fast, then squeezes out gains. |
+| `llm_guided` | LLM picks which node to expand based on full tree context. | When you want the model to drive strategy. |
+
+## Real-world example: XGBoost tuning
+
+```python
+from arborist import TreeSearch, ShellExecutor, NumericEvaluator
+
+search = TreeSearch(
+    goal="Maximize macro F1 on multi-class classification",
+    executor=ShellExecutor(
+        command="python3 train.py --config {config_path}",
+        timeout=300,
+    ),
+    evaluator=NumericEvaluator(field="f1"),
+    seed_configs=[
+        {"n_estimators": 100, "max_depth": 6, "learning_rate": 0.1},
+        {"n_estimators": 200, "max_depth": 4, "learning_rate": 0.05},
+        {"n_estimators": 500, "max_depth": 8, "learning_rate": 0.01},
+    ],
+    strategy="hybrid",
+    concurrency=4,
+    max_experiments=100,
+    max_depth=5,
+    plateau_window=15,
+    db_path="./experiments.db",
+    verbose=True,
+)
+
+results = search.run()
 print(results.report())
 ```
 
-## How It Works
-
-Arborist explores a search space as a tree:
-
-1. **Seed** — Start with initial configurations
-2. **Execute** — Run experiments in parallel
-3. **Evaluate** — Score each result
-4. **Expand** — Generate child configs from promising results (via LLM or custom mutator)
-5. **Prune** — Cut low-performing branches
-6. **Repeat** — Until termination criteria are met
-
-Everything persists to SQLite. Kill and restart anytime.
+Your training script just needs to print JSON with the metric:
+```python
+# train.py
+import json, sys
+config = json.load(open(sys.argv[2]))
+# ... train your model ...
+print(json.dumps({"f1": 0.847, "accuracy": 0.912}))
+```
 
 ## API Reference
 
@@ -54,24 +126,26 @@ Everything persists to SQLite. Kill and restart anytime.
 
 ```python
 search = TreeSearch(
-    goal="Maximize F1 for multi-class classification",
+    goal="...",                         # What you're optimizing
     executor=my_fn,                     # callable(config) -> dict
     score=lambda r: r["f1"],            # callable(results) -> float
-    seed_configs=[                      # Initial experiments
-        {"lr": 0.01, "features": ["feat_1", "feat_2"]},
-        {"lr": 0.001, "features": ["feat_1", "feat_3"]},
-    ],
 
-    # Optional
-    strategy="ucb",                     # ucb, best_first, breadth_first
-    mutator=my_mutator,                 # callable(config, results, context) -> list[dict]
-    concurrency=5,                      # Max parallel branches
+    # Search control
+    strategy="hybrid",                  # ucb, best_first, breadth_first, hybrid, llm_guided
+    mutator=my_mutator,                 # Custom mutation function (optional, defaults to LLM)
+    concurrency=5,                      # Max parallel experiments
     max_experiments=200,                # Total experiment budget
     max_depth=6,                        # Max tree depth
-    budget_usd=10.0,                    # Cost cap
+
+    # Termination
     target_score=0.95,                  # Stop when reached
-    plateau_window=20,                  # Stop if no improvement
-    db_path="./arborist.db",            # SQLite path
+    plateau_window=20,                  # Stop if no improvement for N experiments
+    budget_usd=10.0,                    # LLM cost cap
+
+    # Storage
+    db_path="./arborist.db",            # SQLite path (auto-created)
+
+    # Callbacks
     on_node_complete=callback,          # Called after each experiment
     verbose=True,
 )
@@ -82,14 +156,14 @@ results = search.run()
 ### Results
 
 ```python
-results.best              # Best node (config + score + results)
+results.best              # Best node: config, score, full results
 results.top_k(5)          # Top 5 nodes
-results.insights          # Cross-branch insights
-results.report()          # Markdown report
-results.tree_id           # For resume
+results.insights          # Cross-branch pattern analysis
+results.report()          # Markdown summary
+results.tree_id           # Unique ID for resuming
 ```
 
-### Resume
+### Resume a search
 
 ```python
 search = TreeSearch.resume(
@@ -98,18 +172,22 @@ search = TreeSearch.resume(
     executor=my_fn,
     score=my_score,
 )
-results = search.run()
+results = search.run()  # Picks up where it left off
 ```
 
-### Strategies
+### Custom mutator
 
-| Strategy | Description | Best For |
-|----------|-------------|----------|
-| `ucb` | UCB1 — balances exploration and exploitation | General use, unknown search spaces |
-| `best_first` | Always expands highest-scoring node | Exploitation-heavy, known good regions |
-| `breadth_first` | Level-by-level exploration | Systematic coverage, small search spaces |
+```python
+def my_mutator(config, results, context):
+    """Generate child configs from a parent experiment."""
+    return [
+        {**config, "lr": config["lr"] * 0.5},
+        {**config, "lr": config["lr"] * 2.0},
+        {**config, "n_estimators": config["n_estimators"] + 100},
+    ]
+```
 
-### Custom Executor
+### Custom executor
 
 ```python
 from arborist import Executor, BranchContext
@@ -117,77 +195,29 @@ from arborist import Executor, BranchContext
 class MyExecutor(Executor):
     def run(self, config: dict, context: BranchContext) -> dict:
         # context.goal, context.depth, context.parent_config, etc.
-        return {"metric": train_model(**config)}
-```
-
-### Shell Executor
-
-```python
-from arborist import ShellExecutor
-
-executor = ShellExecutor(
-    command="python3 train.py --config {config_path}",
-    timeout=300,
-)
-```
-
-The shell executor substitutes `{key}` placeholders from the config dict. Use `{config_path}` to write the full config to a temp JSON file.
-
-### Custom Mutator
-
-```python
-def my_mutator(config, results, context):
-    """Generate child configs from a completed experiment."""
-    return [
-        {**config, "lr": config["lr"] * 0.5},
-        {**config, "lr": config["lr"] * 2.0},
-    ]
-```
-
-If no mutator is provided, Arborist uses an LLM-based mutator (via litellm) that analyzes results and suggests new configs. Falls back to random perturbation if no LLM is available.
-
-### Custom Evaluator
-
-```python
-from arborist import NumericEvaluator
-
-# By field name
-evaluator = NumericEvaluator(field="metrics.f1")
-
-# By function
-evaluator = NumericEvaluator(fn=lambda r: r["precision"] * r["recall"])
+        model = train(**config)
+        return {"f1": model.f1, "accuracy": model.accuracy}
 ```
 
 ## CLI
 
 ```bash
-# Run from YAML config
-arborist run --config search.yaml
-
-# Check status
-arborist status [--tree-id ID] [--db ./arborist.db]
-
-# Generate report
-arborist report [--tree-id ID] [--format markdown|json] [--output report.md]
-
-# List all trees
-arborist list [--db ./arborist.db]
-
-# Show node details
-arborist node NODE_ID [--db ./arborist.db]
-
-# Manually prune a branch
-arborist prune NODE_ID --reason "Manual prune" [--db ./arborist.db]
+arborist run --config search.yaml       # Run from YAML config
+arborist status --db ./arborist.db      # Check progress
+arborist report --tree-id ID            # Generate markdown report
+arborist list --db ./arborist.db        # List all searches
+arborist node NODE_ID                   # Inspect a specific node
+arborist prune NODE_ID --reason "..."   # Manually kill a branch
 ```
 
-### YAML Config
+### YAML config
 
 ```yaml
 goal: "Maximize F1 for multi-class classification"
-strategy: ucb
-concurrency: 5
-max_experiments: 200
-max_depth: 6
+strategy: hybrid
+concurrency: 4
+max_experiments: 100
+max_depth: 5
 db_path: ./arborist.db
 
 executor:
@@ -200,26 +230,31 @@ evaluator:
   field: f1
 
 seed_configs:
-  - lr: 0.01
-    features: [feat_1, feat_2, feat_3]
-  - lr: 0.001
-    features: [feat_1, feat_4, feat_5]
+  - n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.1
+  - n_estimators: 200
+    max_depth: 4
+    learning_rate: 0.05
 
 termination:
   target_score: 0.95
-  plateau_window: 20
-  budget_usd: 10.0
+  plateau_window: 15
 ```
 
-## Design Principles
+## Design
 
-1. **Local-first.** SQLite, no cloud, no accounts.
-2. **LLM-agnostic.** litellm means any provider works.
-3. **Composable.** Bring your own executor, evaluator, mutator, strategy.
-4. **Resumable.** Everything persists to SQLite. Kill and restart anytime.
-5. **Observable.** Verbose logging, callbacks, CLI status.
-6. **Minimal dependencies.** Just litellm, click, and pyyaml.
+1. **Local-first.** SQLite storage, no cloud, no accounts, no telemetry.
+2. **LLM-agnostic.** Any provider via litellm (OpenAI, Anthropic, Google, Ollama, etc).
+3. **Composable.** Swap out any component: executor, evaluator, mutator, strategy.
+4. **Resumable.** Full state in SQLite. Kill and restart without losing work.
+5. **Observable.** Verbose logging, per-node callbacks, CLI status checks.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 ## License
 
 MIT
+]]>
