@@ -45,5 +45,8 @@ Homepage = "https://github.com/jared-goering/arborist"
 Repository = "https://github.com/jared-goering/arborist"
 Issues = "https://github.com/jared-goering/arborist/issues"
 
+[tool.hatch.build.targets.wheel]
+packages = ["arborist"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
